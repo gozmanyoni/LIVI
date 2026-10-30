@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Additional terms: see NOTICE
 
+mod boot_trace;
 mod cal;
 mod ctrl;
 mod deco;
@@ -37,6 +38,7 @@ fn parse_args() -> Option<String> {
 }
 
 fn main() {
+    boot_trace::init();
     env_logger::builder()
         .filter_level(if std::env::var("LIVI_WLR_DEBUG").is_ok() {
             log::LevelFilter::Debug
@@ -51,14 +53,19 @@ fn main() {
     let mut event_loop: EventLoop<LiviState> =
         EventLoop::try_new().expect("failed to create event loop");
 
+    boot_trace::mark("state_begin");
     let mut state = LiviState::new(&mut event_loop, startup_cmd);
+    boot_trace::mark("state_ready");
 
     if drm::wanted() {
+        boot_trace::mark("drm_begin");
         drm::init(&mut state, &event_loop.handle());
+        boot_trace::mark("drm_ready");
     } else {
         host::init(&mut state, &event_loop.handle());
     }
     ctrl::init(&mut state, &event_loop.handle());
+    boot_trace::mark("ctrl_ready");
     ctrl::leave_with_core(&event_loop.handle());
     spawn::spawn_startup(&mut state);
 
@@ -67,6 +74,7 @@ fn main() {
         state.ui_socket
     );
 
+    boot_trace::mark("event_loop_ready");
     while state.running {
         if event_loop
             .dispatch(Some(Duration::from_millis(16)), &mut state)

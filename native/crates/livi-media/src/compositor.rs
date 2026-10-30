@@ -17,6 +17,8 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 const TITLEBAR_H: u32 = 32;
 const CLAIM_TIMEOUT: Duration = Duration::from_secs(3);
 const RECONNECT_EVERY: Duration = Duration::from_millis(500);
+const STARTUP_RETRY_EVERY: Duration = Duration::from_millis(50);
+const STARTUP_RETRY_WINDOW: Duration = Duration::from_secs(5);
 const TOUCH_BACKLOG: usize = 64;
 
 pub fn env(cfg: &Config, ctrl: &Path) -> Vec<(String, String)> {
@@ -406,9 +408,12 @@ impl Actor {
 
     async fn run(mut self, mut rx: mpsc::UnboundedReceiver<Cmd>) {
         let (lines_tx, mut lines) = mpsc::unbounded_channel::<Option<String>>();
-        let mut retry = tokio::time::interval(RECONNECT_EVERY);
+        let startup_until = tokio::time::Instant::now() + STARTUP_RETRY_WINDOW;
+        let mut next_retry = tokio::time::Instant::now();
+        let mut connected_once = false;
         loop {
             let deadline = self.claim_deadline;
+            let was_connected = self.writer.is_some();
             tokio::select! {
                 cmd = rx.recv() => match cmd {
                     Some(cmd) => self.on_cmd(cmd).await,
@@ -421,16 +426,25 @@ impl Actor {
                 _ = async { tokio::time::sleep_until(deadline.unwrap()).await }, if deadline.is_some() => {
                     self.abort_in_flight().await;
                 }
-                _ = retry.tick(), if self.writer.is_none() => {
-                    self.try_connect(&lines_tx).await;
+                _ = tokio::time::sleep_until(next_retry), if self.writer.is_none() => {
+                    connected_once |= self.try_connect(&lines_tx).await;
+                    let now = tokio::time::Instant::now();
+                    next_retry = if !connected_once && now < startup_until {
+                        (now + STARTUP_RETRY_EVERY).min(startup_until)
+                    } else {
+                        now + RECONNECT_EVERY
+                    };
                 }
+            }
+            if was_connected && self.writer.is_none() {
+                next_retry = tokio::time::Instant::now() + RECONNECT_EVERY;
             }
         }
     }
 
-    async fn try_connect(&mut self, lines_tx: &mpsc::UnboundedSender<Option<String>>) {
+    async fn try_connect(&mut self, lines_tx: &mpsc::UnboundedSender<Option<String>>) -> bool {
         let Ok(stream) = UnixStream::connect(&self.path).await else {
-            return;
+            return false;
         };
         let (rd, wr) = stream.into_split();
         self.writer = Some(wr);
@@ -443,6 +457,7 @@ impl Actor {
             let _ = tx.send(None);
         });
         self.flush().await;
+        true
     }
 
     async fn on_cmd(&mut self, cmd: Cmd) {
@@ -664,6 +679,86 @@ mod tests {
             FakeCompositor { listener },
             CompositorControl::connect(path),
         )
+    }
+
+    async fn settle() {
+        // Keep the paused clock stationary while the socket reactor and actor drain.
+        for _ in 0..128 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    fn delayed_listener(path: &Path) -> std::os::unix::net::UnixListener {
+        let listener = std::os::unix::net::UnixListener::bind(path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        listener
+    }
+
+    fn assert_not_connected(listener: &std::os::unix::net::UnixListener) {
+        assert!(matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_late_starting_compositor_connects_on_the_fast_startup_cadence() {
+        let dir = TempDir::new();
+        let path = dir.0.join("ctrl");
+        let ctrl = CompositorControl::connect(path.clone());
+        settle().await;
+        tokio::time::advance(Duration::from_millis(125)).await;
+        settle().await;
+        let listener = delayed_listener(&path);
+        tokio::time::advance(Duration::from_millis(49)).await;
+        settle().await;
+        assert_not_connected(&listener);
+        // Commands must not push back the already scheduled retry.
+        ctrl.backdrop("#102030");
+        settle().await;
+        tokio::time::advance(Duration::from_millis(1)).await;
+        settle().await;
+        let (_stream, _) = listener.accept().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_missing_compositor_returns_to_normal_retries_after_five_seconds() {
+        let dir = TempDir::new();
+        let path = dir.0.join("ctrl");
+        let _ctrl = CompositorControl::connect(path.clone());
+        settle().await;
+        for _ in 0..100 {
+            tokio::time::advance(Duration::from_millis(50)).await;
+            settle().await;
+        }
+        let listener = delayed_listener(&path);
+        tokio::time::advance(Duration::from_millis(499)).await;
+        settle().await;
+        assert_not_connected(&listener);
+        tokio::time::advance(Duration::from_millis(1)).await;
+        settle().await;
+        let (_stream, _) = listener.accept().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_connected_compositor_uses_normal_retries_even_inside_the_startup_window() {
+        let dir = TempDir::new();
+        let path = dir.0.join("ctrl");
+        let listener = delayed_listener(&path);
+        let ctrl = CompositorControl::connect(path);
+        settle().await;
+        let (mut stream, _) = listener.accept().unwrap();
+        std::io::Write::write_all(&mut stream, b"ui wayland-test -\n").unwrap();
+        settle().await;
+        assert_eq!(
+            ctrl.ui().borrow().as_ref().unwrap().wayland_display,
+            "wayland-test"
+        );
+        drop(stream);
+        settle().await;
+        tokio::time::advance(Duration::from_millis(499)).await;
+        settle().await;
+        assert_not_connected(&listener);
+        tokio::time::advance(Duration::from_millis(1)).await;
+        settle().await;
+        let (_stream, _) = listener.accept().unwrap();
     }
 
     #[tokio::test]

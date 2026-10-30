@@ -89,6 +89,12 @@ impl CompositorHandler for LiviState {
             classify_on_initial_commit(self, idx);
             if self.toplevels[idx].kind == Kind::Ui {
                 self.toplevels[idx].clear = crate::projection::ui_clear(&root);
+                if self.toplevels[idx].screen_idx == 0 && crate::boot_trace::enabled() {
+                    let (w, h) = crate::render::surface_size(&root);
+                    if w > 0 && h > 0 {
+                        crate::boot_trace::mark("main_ui_buffer_commit");
+                    }
+                }
             }
             self.center_dialog_by_surface(&root);
             crate::host::damage_all(self);

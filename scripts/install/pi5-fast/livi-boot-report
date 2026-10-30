@@ -1,0 +1,13 @@
+#!/bin/bash
+set -u
+date --iso-8601=seconds
+systemd-analyze time
+systemd-analyze critical-chain livi-kiosk.service livi-wifi-ap.service
+systemd-analyze blame | head -25
+systemctl --no-pager --full status livi-kiosk.service livi-wifi-ap.service bluetooth.service seatd.service
+journalctl -b -o short-monotonic --no-pager -u livi-kiosk -u livi-wifi-ap | tail -150
+cat /proc/device-tree/model
+printf '\n'
+iw dev wlan0 info
+bluetoothctl show
+grep -hE 'LIVI connected|MFi|auth succeeded|RECORD|decoded format|error|failed' /home/livi/.config/LIVI/log/*.log | tail -45

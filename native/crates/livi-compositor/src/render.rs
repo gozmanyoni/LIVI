@@ -62,6 +62,7 @@ pub fn cal_program(state: &mut LiviState) -> Option<GlesTexProgram> {
         return Some(p);
     }
     let renderer = state.renderer.as_mut()?;
+    crate::boot_trace::mark("cal_shader_begin");
     match renderer.compile_custom_texture_shader(
         CAL_FRAG,
         &[
@@ -71,6 +72,7 @@ pub fn cal_program(state: &mut LiviState) -> Option<GlesTexProgram> {
         ],
     ) {
         Ok(p) => {
+            crate::boot_trace::mark("cal_shader_ready");
             state.cal_program = Some(p.clone());
             Some(p)
         }
@@ -141,13 +143,14 @@ pub fn surface_under(
     found.into_inner()
 }
 
-fn collect_elements(state: &mut LiviState, screen_idx: usize) -> Vec<LiviElement> {
+fn collect_elements(state: &mut LiviState, screen_idx: usize) -> (Vec<LiviElement>, bool) {
     let s = &state.screens[screen_idx];
     let (sx, sw, sh) = (s.x, s.width, s.height);
     let fullscreen = s.fullscreen;
     let role = s.role.clone();
     let renderer = state.renderer.as_mut().unwrap();
     let mut elements: Vec<LiviElement> = Vec::new();
+    let mut has_ui = false;
     let scale = smithay::utils::Scale::from(1.0);
 
     let to_local =
@@ -218,7 +221,7 @@ fn collect_elements(state: &mut LiviState, screen_idx: usize) -> Vec<LiviElement
         .iter()
         .filter(|t| t.kind == Kind::Ui && t.screen_idx == screen_idx && !t.clear)
     {
-        elements.extend(
+        let ui_elements =
             render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<GlesRenderer>>(
                 renderer,
                 t.toplevel.wl_surface(),
@@ -226,10 +229,9 @@ fn collect_elements(state: &mut LiviState, screen_idx: usize) -> Vec<LiviElement
                 scale,
                 1.0,
                 ElementKind::Unspecified,
-            )
-            .into_iter()
-            .map(LiviElement::Surface),
-        );
+            );
+        has_ui |= !ui_elements.is_empty();
+        elements.extend(ui_elements.into_iter().map(LiviElement::Surface));
     }
 
     for &vi in state.video_order.iter().rev() {
@@ -254,11 +256,13 @@ fn collect_elements(state: &mut LiviState, screen_idx: usize) -> Vec<LiviElement
     }
 
     let _ = (sh, TITLEBAR_H);
-    elements
+    (elements, has_ui)
 }
 
 pub struct FrameParts {
     pub elements: Vec<LiviElement>,
+    /// At least one actual UI surface render element, excluding video/decorations.
+    pub has_ui: bool,
     pub clear: Color32F,
     pub cal: Option<GlesTexProgram>,
     pub uniforms: Vec<Uniform<'static>>,
@@ -275,7 +279,7 @@ pub fn frame_parts(state: &mut LiviState, screen_idx: usize) -> FrameParts {
             [0.0, 0.0, 0.0, 1.0]
         }
     };
-    let elements = collect_elements(state, screen_idx);
+    let (elements, has_ui) = collect_elements(state, screen_idx);
     let cal = if state.cal.active && !state.cal.in_lut {
         cal_program(state)
     } else {
@@ -291,6 +295,7 @@ pub fn frame_parts(state: &mut LiviState, screen_idx: usize) -> FrameParts {
     ];
     FrameParts {
         elements,
+        has_ui,
         clear: Color32F::new(backdrop[0], backdrop[1], backdrop[2], backdrop[3]),
         cal,
         uniforms,

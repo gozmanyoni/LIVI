@@ -8,6 +8,23 @@ LIVI is an open-source **Apple CarPlay and Android Auto head unit**.
 
 It is a standalone cross-platform head unit with a native, zero-copy GStreamer video pipeline and hardware-accelerated decoding across Linux (from x86_64 and arm64 desktops to embedded boards like the Raspberry Pi) and macOS, with low-latency audio, multitouch + D-Pad navigation, and support for very small embedded/OEM displays.
 
+## BMW Pi 5 fork
+
+Based on LIVI by Lasse Heitgres (https://github.com/f-io/LIVI).
+
+This checkout is the native Rust/Slint foundation for a BMW E9x interface with
+wireless CarPlay. The original CIC remains headless as MOST master and OEM audio
+backend. BMW telemetry, UI and CAN integration are the next development lanes.
+See [the project architecture](docs/BMW_CIC_PROJECT.md) and
+[the session handoff](docs/SESSION_HANDOFF.md) before starting work.
+
+The Pi 5 with the Waveshare 1600×600 touch panel has been tested with wireless
+CarPlay using a privately approved experimental software authentication identity.
+The identity and private flash image are excluded from Git. This local test path
+supplements the upstream hardware authentication documentation below; acceptance
+on other devices or future iOS versions has not been established.
+[Pi image and measured startup work](scripts/install/pi5-fast/README.md).
+
 ## Project Status
 
 ![Release](https://img.shields.io/github/v/release/f-io/LIVI?label=release)

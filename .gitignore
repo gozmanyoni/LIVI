@@ -66,3 +66,16 @@ assets/livi-link/*/*.gz
 assets/livi-link/*/*.lfwb
 assets/livi-link/*/MANIFEST.md5
 native/crates/livi-link-provision/assets/bindshell/*
+# Local session state and language caches
+.omx/
+__pycache__/
+*.py[cod]
+.build/
+.swiftpm/
+xcuserdata/
+
+# Private local test identities and generated access files
+certificate.p7b
+identity.pk8
+access.json
+START-HERE.txt

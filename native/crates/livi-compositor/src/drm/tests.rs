@@ -8,6 +8,7 @@ fn mode(w: u16, h: u16, refresh: u32, preferred: bool) -> Offered {
     Offered {
         size: (w, h),
         refresh,
+        interlaced: false,
         preferred,
     }
 }
@@ -22,6 +23,27 @@ fn the_setting_wins_with_its_fastest_refresh() {
     assert_eq!(choose(&modes, Some((1280, 720))), Some(2));
     assert_eq!(size_of("1024x600"), Some((1024, 600)));
     assert_eq!(size_of("auto"), None);
+}
+
+#[test]
+fn the_setting_prefers_progressive_over_a_higher_interlaced_refresh() {
+    let interlaced = Offered {
+        interlaced: true,
+        ..mode(1600, 600, 120, false)
+    };
+    let progressive = mode(1600, 600, 60, false);
+    let modes = [mode(1920, 1080, 144, true), progressive, interlaced];
+    assert_eq!(choose(&modes, Some((1600, 600))), Some(1));
+    assert_eq!(
+        choose(&[interlaced, progressive], Some((1600, 600))),
+        Some(1),
+        "the progressive mode wins regardless of enumeration order"
+    );
+    assert_eq!(
+        choose(&[interlaced, mode(1280, 720, 60, true)], Some((1600, 600))),
+        Some(0),
+        "an interlaced-only configured resolution still wins over another size"
+    );
 }
 
 #[test]

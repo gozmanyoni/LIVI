@@ -88,6 +88,7 @@ struct Output {
     frame_pending: bool,
     direct: usize,
     needs_redraw: bool,
+    boot_frame: crate::boot_trace::FirstUiFrame,
 }
 
 impl Output {
@@ -134,21 +135,31 @@ fn start(
     state: &mut LiviState,
     handle: &LoopHandle<'static, LiviState>,
 ) -> Result<DrmState, Box<dyn std::error::Error>> {
+    crate::boot_trace::mark("libseat_begin");
     let (mut session, session_events) = LibSeatSession::new()?;
+    crate::boot_trace::mark("libseat_ready");
     handle
         .insert_source(session_events, |event, _, state: &mut LiviState| {
             session_event(state, event)
         })
         .map_err(|e| e.error)?;
     let seat = session.seat();
+    crate::boot_trace::mark("open_gpu_begin");
     let (device, notifier, fd) = open_device(&mut session, &seat)?;
+    crate::boot_trace::mark("open_gpu_ready");
 
     let gbm = GbmDevice::new(fd.clone())?;
+    crate::boot_trace::mark("gbm_ready");
     let egl_display = unsafe { EGLDisplay::new(gbm.clone())? };
-    let renderer = unsafe { GlesRenderer::new(EGLContext::new(&egl_display)?)? };
+    crate::boot_trace::mark("egl_display_ready");
+    let egl_context = EGLContext::new(&egl_display)?;
+    crate::boot_trace::mark("egl_context_ready");
+    let renderer = unsafe { GlesRenderer::new(egl_context)? };
+    crate::boot_trace::mark("gles_renderer_ready");
     let formats = renderer.egl_context().dmabuf_render_formats().clone();
     let scanout = fd.dev_id().ok().map(|dev| (dev, plane_formats(&device)));
     crate::host::serve_dmabuf(state, &egl_display, &renderer, scanout);
+    crate::boot_trace::mark("dmabuf_ready");
     let import_node = state
         .render_node
         .as_deref()
@@ -171,6 +182,7 @@ fn start(
         })
         .map_err(|e| e.error)?;
 
+    crate::boot_trace::mark("libinput_begin");
     let mut libinput = Libinput::new_with_udev(LibinputSessionInterface::from(session.clone()));
     libinput
         .udev_assign_seat(&seat)
@@ -182,11 +194,16 @@ fn start(
         )
         .map_err(|e| e.error)?;
 
+    crate::boot_trace::mark("libinput_ready");
+    crate::boot_trace::mark("keyboard_begin");
     state.seat.add_keyboard(Default::default(), 600, 25)?;
     state.seat.add_pointer();
     state.seat.add_touch();
+    crate::boot_trace::mark("keyboard_ready");
 
+    crate::boot_trace::mark("connector_scan_begin");
     let connectors = connectors(&device, false);
+    crate::boot_trace::mark("connector_scan_ready");
     log::info!("driving the displays directly on seat {seat}");
     Ok(DrmState {
         session,
@@ -429,6 +446,7 @@ fn rescan(state: &mut LiviState) {
 }
 
 fn arrange(state: &mut LiviState) {
+    crate::boot_trace::mark("arrange_begin");
     let Some(wanted) = state.drm.as_ref().map(|d| d.wanted.clone()) else {
         return;
     };
@@ -468,7 +486,10 @@ fn arrange(state: &mut LiviState) {
         crate::ctrl::send_displays(state);
         crate::ctrl::send_panels(state);
     }
+    crate::boot_trace::mark("calibration_begin");
     apply_calibration(state);
+    crate::boot_trace::mark("calibration_ready");
+    crate::boot_trace::mark("arrange_ready");
 }
 
 pub fn apply_calibration(state: &mut LiviState) {
@@ -531,6 +552,7 @@ fn light(
         scale: Scale::from(1.0),
         transform,
     };
+    crate::boot_trace::mark("drm_compositor_begin");
     let surface = DrmCompositor::new(
         source,
         surface,
@@ -543,6 +565,7 @@ fn light(
         Some(drm.gbm.clone()),
     )
     .map_err(|e| e.to_string())?;
+    crate::boot_trace::mark("drm_compositor_ready");
     let output = Output {
         screen_idx,
         connector: name.to_string(),
@@ -553,6 +576,9 @@ fn light(
         frame_pending: false,
         direct: 0,
         needs_redraw: true,
+        boot_frame: crate::boot_trace::FirstUiFrame::new(
+            screen_idx == 0 && crate::boot_trace::enabled(),
+        ),
     };
     let (lw, lh) = output.logical();
     drm.outputs.push(output);
@@ -685,6 +711,7 @@ fn session_event(state: &mut LiviState, event: SessionEvent) {
                     log::error!("{} did not reset: {e}", output.connector);
                 }
                 output.frame_pending = false;
+                output.boot_frame.reset_pending();
                 output.needs_redraw = true;
             }
             rescan(state);
@@ -700,7 +727,14 @@ fn vblank(state: &mut LiviState, crtc: crtc::Handle) {
     let Some(output) = drm.outputs.iter_mut().find(|o| o.crtc == crtc) else {
         return;
     };
-    if let Err(e) = output.surface.frame_submitted() {
+    let submitted = output.surface.frame_submitted();
+    if output
+        .boot_frame
+        .submitted(matches!(&submitted, Ok(Some(_))))
+    {
+        crate::boot_trace::mark("main_ui_frame_submitted");
+    }
+    if let Err(e) = submitted {
         log::error!("frame not submitted: {e}");
     }
     output.frame_pending = false;
@@ -770,6 +804,7 @@ pub fn render(state: &mut LiviState, screen_idx: usize) {
     };
     output.needs_redraw = false;
     let clear = parts.clear;
+    let has_ui = parts.has_ui;
     let elements = match crate::render::calibrated(renderer, parts, output.logical()) {
         Ok(elements) => elements,
         Err(e) => {
@@ -797,7 +832,11 @@ pub fn render(state: &mut LiviState, screen_idx: usize) {
                 );
                 output.direct = direct;
             }
-            match output.surface.queue_frame(()) {
+            let queued = output.surface.queue_frame(());
+            if output.boot_frame.queued(has_ui, queued.is_ok()) {
+                crate::boot_trace::mark("main_ui_frame_queued");
+            }
+            match queued {
                 Ok(()) => true,
                 Err(e) => {
                     log::error!("display flip: {e}");

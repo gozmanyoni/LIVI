@@ -134,9 +134,9 @@ fn current_names(file: &Value) -> Value {
     ] {
         rename(top, old, new);
     }
-    if let Some(Value::String(main)) = top.remove("displayMode") {
+    if let Some(Value::String(main)) = top.get("displayMode") {
         let screens = [
-            ("main", main),
+            ("main", main.clone()),
             ("cluster", String::new()),
             ("aux", String::new()),
         ]
@@ -419,6 +419,38 @@ pub mod tests {
         }
         assert_eq!(live["clusterScreenWidth"], 1024);
         assert_eq!(live["dashboard"]["cluster"], true);
+    }
+
+    #[test]
+    fn per_screen_display_modes_and_wireless_carplay_survive_save_and_reload() {
+        let dir = TempDir::new();
+        let file = file_in(&dir);
+        let expected = apply_patch(
+            &defaults(),
+            &json!({
+                "displayMode": {
+                    "main": "1600x600",
+                    "cluster": "1024x600",
+                    "aux": "1920x1080"
+                },
+                "wirelessCpEnabled": true
+            }),
+        )
+        .unwrap();
+        file.save(&expected).unwrap();
+
+        let loaded = file.load(&HostFacts::default());
+        assert_eq!(loaded, expected);
+        file.save(&loaded).unwrap();
+        let reloaded = file.load(&HostFacts::default());
+        assert_eq!(reloaded.display_mode, expected.display_mode);
+        assert!(reloaded.wireless_cp_enabled);
+        assert_eq!(reloaded, expected);
+
+        let live = written(&dir, "LIVI/config.json");
+        assert_eq!(live["displayMode"], for_file(&expected)["displayMode"]);
+        assert_eq!(live["wirelessCpEnabled"], true);
+        assert_eq!(live, written(&dir, "backup/config.json"));
     }
 
     #[test]

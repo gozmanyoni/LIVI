@@ -3,11 +3,13 @@
 // Additional terms: see NOTICE
 
 use super::*;
+use smithay::reexports::drm::control::ModeFlags;
 
 #[derive(Clone, Copy)]
 pub(super) struct Offered {
     pub(super) size: (u16, u16),
     pub(super) refresh: u32,
+    pub(super) interlaced: bool,
     pub(super) preferred: bool,
 }
 
@@ -27,6 +29,7 @@ pub(super) fn pick_mode(modes: &[Mode], setting: Option<&str>) -> Option<Mode> {
         .map(|m| Offered {
             size: m.size(),
             refresh: m.vrefresh(),
+            interlaced: m.flags().contains(ModeFlags::INTERLACE),
             preferred: m.mode_type().contains(ModeTypeFlags::PREFERRED),
         })
         .collect();
@@ -44,7 +47,7 @@ pub(super) fn choose(modes: &[Offered], configured: Option<(u16, u16)>) -> Optio
             .iter()
             .enumerate()
             .filter(|(_, m)| fits(m))
-            .max_by_key(|(_, m)| (m.area(), m.refresh))
+            .max_by_key(|(_, m)| (m.area(), !m.interlaced, m.refresh))
             .map(|(i, _)| i)
     };
     if let Some(size) = configured
