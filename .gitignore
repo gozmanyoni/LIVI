@@ -79,3 +79,6 @@ certificate.p7b
 identity.pk8
 access.json
 START-HERE.txt
+
+# Dependencies retained from the archived Electron checkout
+node_modules/

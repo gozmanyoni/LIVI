@@ -106,6 +106,21 @@ pairing data or raw logs. They are private local artifacts, even on a public for
 A source build with optional trace code does not mean the instrumented binary was
 retained on hardware. Keep source and deployed binary provenance distinct.
 
+## Consolidation verification
+
+All 157 legacy source files were preserved byte-for-byte on the local archive
+branch. The old `main` baseline is also retained as
+`codex/legacy-main-before-native-20261030`. No legacy source branch was published.
+The 216 private worktree artifacts were copied here and SHA-256 verified; the
+original worktree remains available. Copy manifests, archive fingerprints and
+local session tooling are in ignored `.cache/migration-20261030/`.
+
+Native source passed 13 config, 29 media and 26 compositor tests. All 87 Python
+helper tests passed. Rust formatting, media/compositor Clippy with warnings denied,
+shell syntax and whitespace checks passed during consolidation. Existing legacy
+Electron lint errors were recorded in its archive commit rather than altering
+user source to make an archival snapshot pass.
+
 ## Existing local references and caches
 
 Private generated artifacts are copied into this main checkout under `dist/` and
