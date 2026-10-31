@@ -15,6 +15,7 @@ mod icon_ui;
 mod icons;
 mod keys_ui;
 mod log;
+mod map_preview_ui;
 mod media;
 mod media_ui;
 mod overlay_ui;
@@ -108,9 +109,14 @@ fn apply_look(ui: &AppWindow, look: Look) {
     ui.set_right_hand(look.right_hand);
     ui.set_stream_width(look.stream.0);
     ui.set_stream_height(look.stream.1);
-    let tabs: Vec<TabData> = look.tabs.iter().copied().map(tab).collect();
+    let mut tabs = vec![TabData {
+        page: Page::Home,
+        icon: icons::icon("HomeOutlined").unwrap_or_default(),
+    }];
+    tabs.extend(look.tabs.iter().copied().map(tab));
+    ui.set_home_media_enabled(look.tabs.contains(&Tab::Media));
     if !tabs.iter().any(|t| t.page == ui.get_page()) {
-        choose(ui, Page::Media);
+        choose(ui, Page::Home);
     }
     ui.set_tabs(ModelRc::from(Rc::new(VecModel::from(tabs))));
     ui.set_projection_icon(tab(Tab::Projection).icon);
@@ -142,6 +148,8 @@ fn render_settings(ui: &AppWindow) {
 
 fn apply(ui: &AppWindow, update: Update) {
     match update {
+        Update::MapPreview(preview) => map_preview_ui::apply(ui, preview),
+        Update::MapPreviewEnabled(enabled) => ui.set_map_preview_enabled(enabled),
         Update::Media(m) => CLIENT.with_borrow(|c| media_ui::apply_media(ui, c.as_ref(), m)),
         Update::Dab(d) => media_ui::apply_dab(ui, d),
         Update::Dash(d) => {
@@ -164,7 +172,7 @@ fn apply(ui: &AppWindow, update: Update) {
         Update::Front(front) => match (front, ui.get_page()) {
             (Front::Projection, Page::Projection) => {}
             (Front::Projection, _) => choose(ui, Page::Projection),
-            (_, Page::Projection) => choose(ui, Page::Media),
+            (_, Page::Projection) => choose(ui, Page::Home),
             _ => {}
         },
         Update::Phone(phone) => {
@@ -210,18 +218,24 @@ pub fn report_page(ui: &AppWindow) {
     });
 }
 
-fn open_path(ui: &AppWindow, path: &str) {
-    let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
-    let page = match parts.first().copied() {
-        None | Some("projection") => Page::Projection,
+fn route_page(first: Option<&str>, phone: PhoneState) -> Option<Page> {
+    Some(match first {
+        None if phone == PhoneState::Streaming => Page::Projection,
+        None | Some("home") => Page::Home,
+        Some("projection") => Page::Projection,
         Some("telemetry") => Page::Telemetry,
         Some("media") => Page::Media,
         Some("camera") => Page::Camera,
         Some("settings") => Page::Settings,
-        Some(other) => {
-            println!("[ui] no page for {other}");
-            return;
-        }
+        _ => return None,
+    })
+}
+
+fn open_path(ui: &AppWindow, path: &str) {
+    let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
+    let Some(page) = route_page(parts.first().copied(), ui.get_phone()) else {
+        println!("[ui] no page for {path}");
+        return;
     };
     match (page, parts.get(1).copied()) {
         (Page::Media, Some("dabplus")) => ui.global::<DabState>().set_view_dab(true),
@@ -249,6 +263,7 @@ fn choose(ui: &AppWindow, page: Page) {
 
 fn reported(ui: &AppWindow, client: &Client, page: Page) {
     let (front, path) = match page {
+        Page::Home => (Front::Livi, "/home"),
         Page::Projection => (Front::Projection, "/"),
         Page::Telemetry if dashboard_ui::map_shown(ui) => (Front::Cluster, "/telemetry"),
         Page::Telemetry => (Front::Livi, "/telemetry"),
@@ -352,7 +367,10 @@ fn follow_core(weak: Weak<AppWindow>) -> impl FnMut(Event, &Value) + Send + 'sta
             Event::Changed(keys) => follow.changed(Some(&keys), state),
             Event::Spectrum(bands) => vec![Update::Spectrum(bands)],
             Event::OpenPage(path) => vec![Update::Open(path)],
-            Event::Gone(why) => vec![Update::Status(format!("core: {why}"))],
+            Event::Gone(why) => vec![
+                Update::MapPreview(Default::default()),
+                Update::Status(format!("core: {why}")),
+            ],
         };
         if updates.is_empty() {
             return;
@@ -390,6 +408,30 @@ fn snapshot_later(weak: Weak<AppWindow>, path: String) {
 
 fn wire(ui: &AppWindow, client: &Client) {
     let weak = ui.as_weak();
+    ui.on_home_open({
+        let weak = weak.clone();
+        move |tile| {
+            if let Some(ui) = weak.upgrade() {
+                let path = match tile {
+                    0 if ui.get_home_media_enabled() => "/media",
+                    1 => "/settings/devices",
+                    2 | 4 => "/projection",
+                    3 => "/settings/car",
+                    5 => "/settings",
+                    _ => return,
+                };
+                open_path(&ui, path);
+                if tile == 2 {
+                    CLIENT.with_borrow(|c| {
+                        if let Some(c) = c {
+                            c.act(livi_core_proto::message::Action::OpenNavigation);
+                        }
+                    });
+                }
+                keys_ui::home_destination_opened(&ui);
+            }
+        }
+    });
     ui.on_page_chosen({
         let weak = weak.clone();
         let c = client.clone();
@@ -437,6 +479,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     ui.set_bands(ModelRc::from(Rc::new(VecModel::from(vec![0.0f32; BANDS]))));
     ui.set_clock(clock::now_text().into());
+    let (day, month, year) = clock::calendar();
+    ui.set_calendar_day(day.into());
+    ui.set_calendar_month(month.into());
+    ui.set_calendar_year(year.into());
     ui.global::<DashState>().set_clock(clock::now_text().into());
 
     let quit_code = Arc::new(AtomicI32::new(0));
@@ -460,6 +506,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     settings_ui::wire(&ui, &client, &lang);
     keys_ui::wire(&ui, &client);
     wire(&ui, &client);
+    map_preview_ui::wire(&ui, &client);
     if let Some(path) = &fixture {
         let state: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
         *client.state() = state.clone();
@@ -475,6 +522,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         move || {
             if let Some(ui) = weak.upgrade() {
                 ui.set_clock(clock::now_text().into());
+                let (day, month, year) = clock::calendar();
+                ui.set_calendar_day(day.into());
+                ui.set_calendar_month(month.into());
+                ui.set_calendar_year(year.into());
                 ui.global::<DashState>().set_clock(clock::now_text().into());
                 secondary::tick_clock(&clock::now_text());
             }
@@ -528,6 +579,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     reported(&ui, &client, ui.get_page());
     if let Ok(page) = std::env::var("LIVI_UI_PAGE") {
         let page = match page.as_str() {
+            "home" => Page::Home,
             "projection" => Page::Projection,
             "settings" => Page::Settings,
             "telemetry" => Page::Telemetry,
@@ -564,4 +616,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(err.into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod opennbt_tests {
+    use super::*;
+
+    #[test]
+    fn idle_home_does_not_replace_an_active_phone_start_page() {
+        assert_eq!(route_page(None, PhoneState::None), Some(Page::Home));
+        assert_eq!(route_page(None, PhoneState::Connected), Some(Page::Home));
+        assert_eq!(
+            route_page(None, PhoneState::Streaming),
+            Some(Page::Projection)
+        );
+        assert_eq!(
+            route_page(Some("home"), PhoneState::Streaming),
+            Some(Page::Home)
+        );
+        assert_eq!(
+            route_page(Some("projection"), PhoneState::None),
+            Some(Page::Projection)
+        );
+        assert_eq!(route_page(Some("missing"), PhoneState::None), None);
+    }
 }

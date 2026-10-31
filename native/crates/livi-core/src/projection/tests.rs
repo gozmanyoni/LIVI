@@ -33,6 +33,279 @@ fn livi() -> PerScreen<Front> {
     }
 }
 
+fn map_rect() -> VideoRect {
+    VideoRect {
+        x: 0.6,
+        y: 0.2,
+        width: 0.3,
+        height: 0.6,
+    }
+}
+
+#[tokio::test]
+async fn the_navigation_tile_only_demands_an_active_carplay_map() {
+    let mut rig = Rig::new();
+    rig.p.map_preview(1, Some(map_rect()));
+    assert_eq!(rig.hub.watch().borrow().map_preview, MapPreview::default());
+    assert!(rig.drain().is_empty());
+    rig.connect(1, true);
+    assert_eq!(
+        rig.hub.watch().borrow().map_preview.viewport,
+        Some(map_rect())
+    );
+    assert_eq!(
+        rig.drain()
+            .into_iter()
+            .filter(|c| matches!(c, CpCmd::ClusterActive(_)))
+            .collect::<Vec<_>>(),
+        [CpCmd::ClusterActive(true)]
+    );
+    assert!(
+        rig.aa_drain().is_empty(),
+        "the preview never demands Android Auto's cluster"
+    );
+    rig.p.publish();
+    rig.p.map_preview(1, Some(map_rect()));
+    assert!(rig.drain().is_empty(), "unchanged demand sends no commands");
+}
+
+#[tokio::test]
+async fn a_map_codec_does_not_make_the_tile_ready_before_a_rendered_frame() {
+    let mut rig = Rig::new();
+    rig.p.map_preview(1, Some(map_rect()));
+    rig.connect(1, true);
+    rig.p.on_event(CpEvent::VideoCodec {
+        id: 1,
+        cluster: true,
+        codec: livi_cp::stack::ScreenCodec::H264,
+    });
+    assert!(!rig.hub.watch().borrow().map_preview.ready);
+    rig.p.map_video_ready(true);
+    assert!(rig.hub.watch().borrow().map_preview.ready);
+    rig.p.map_video_ready(false);
+    assert!(!rig.hub.watch().borrow().map_preview.ready);
+}
+
+#[tokio::test]
+async fn resizing_a_ready_map_waits_for_a_fresh_frame_but_identical_placement_does_not() {
+    let mut rig = Rig::new();
+    rig.connect(1, true);
+    rig.p.map_preview(1, Some(map_rect()));
+    rig.p.map_video_ready(true);
+    rig.drain();
+
+    rig.p.map_preview(1, Some(map_rect()));
+    assert!(rig.hub.watch().borrow().map_preview.ready);
+    assert!(rig.drain().is_empty());
+
+    let resized = VideoRect {
+        width: 0.25,
+        ..map_rect()
+    };
+    rig.p.map_preview(1, Some(resized));
+    assert_eq!(
+        rig.hub.watch().borrow().map_preview,
+        MapPreview {
+            viewport: Some(resized),
+            ready: false,
+        }
+    );
+    assert_eq!(rig.drain(), [stack(1, StackCmd::Keyframe)]);
+    rig.p.map_video_ready(true);
+    assert!(rig.hub.watch().borrow().map_preview.ready);
+    assert!(rig.drain().is_empty());
+}
+
+#[tokio::test]
+async fn leaving_the_tile_releases_its_stream_but_preserves_dashboard_demand() {
+    let mut rig = Rig::new();
+    rig.connect(1, true);
+    rig.p.map_preview(1, Some(map_rect()));
+    rig.p.map_video_ready(true);
+    rig.drain();
+    rig.want(Front::Projection);
+    assert_eq!(rig.hub.watch().borrow().map_preview, MapPreview::default());
+    assert!(rig.drain().contains(&CpCmd::ClusterActive(false)));
+    rig.want(Front::Livi);
+    assert_eq!(
+        rig.hub.watch().borrow().map_preview.viewport,
+        Some(map_rect())
+    );
+    rig.p.asked(PerScreen {
+        cluster: Front::Cluster,
+        ..livi()
+    });
+    rig.drain();
+    rig.p.map_preview(1, None);
+    assert!(
+        rig.drain().is_empty(),
+        "the dashboard still consumes the stream"
+    );
+    rig.p.asked(livi());
+    assert_eq!(rig.drain(), [CpCmd::ClusterActive(false)]);
+}
+
+#[tokio::test]
+async fn an_old_ui_disconnect_cannot_remove_a_newer_map_viewport() {
+    let mut rig = Rig::new();
+    rig.connect(1, true);
+    rig.p.map_preview(10, Some(map_rect()));
+    let next = VideoRect {
+        x: 0.1,
+        ..map_rect()
+    };
+    rig.p.map_preview(11, Some(next));
+    rig.p.map_preview(10, Some(map_rect()));
+    rig.p.map_preview_gone(10);
+    assert_eq!(rig.hub.watch().borrow().map_preview.viewport, Some(next));
+    rig.drain();
+    rig.p.map_preview_gone(11);
+    assert_eq!(rig.hub.watch().borrow().map_preview, MapPreview::default());
+    assert_eq!(rig.drain(), [CpCmd::ClusterActive(false)]);
+    rig.p.map_preview(10, Some(map_rect()));
+    rig.p.map_preview(11, Some(next));
+    assert_eq!(rig.hub.watch().borrow().map_preview, MapPreview::default());
+    assert!(
+        rig.drain().is_empty(),
+        "closed and superseded owners stay retired"
+    );
+    rig.p.map_preview(12, Some(map_rect()));
+    assert_eq!(
+        rig.hub.watch().borrow().map_preview.viewport,
+        Some(map_rect())
+    );
+    assert_eq!(rig.drain(), [CpCmd::ClusterActive(true)]);
+}
+
+#[tokio::test]
+async fn unsupported_invalid_and_disabled_tile_requests_stay_inactive() {
+    let mut rig = Rig::new();
+    rig.aa_connect(1, true);
+    rig.drain();
+    rig.aa_drain();
+    rig.p.map_preview(1, Some(map_rect()));
+    assert_eq!(rig.hub.watch().borrow().map_preview, MapPreview::default());
+    assert!(rig.drain().is_empty());
+    assert!(rig.aa_drain().is_empty());
+    rig.connect(2, true);
+    rig.p.activate_next();
+    rig.drain();
+    rig.p.map_preview(
+        1,
+        Some(VideoRect {
+            width: f64::NAN,
+            ..map_rect()
+        }),
+    );
+    assert_eq!(rig.hub.watch().borrow().map_preview, MapPreview::default());
+    assert_eq!(rig.drain(), [CpCmd::ClusterActive(false)]);
+    rig.p.map_preview(1, Some(map_rect()));
+    rig.drain();
+    rig.settings(|c| c.car_play_nav_tile = false);
+    assert_eq!(rig.hub.watch().borrow().map_preview, MapPreview::default());
+    assert!(rig.drain().contains(&CpCmd::ClusterActive(false)));
+    rig.settings(|c| c.car_play_nav_tile = true);
+    assert_eq!(
+        rig.hub.watch().borrow().map_preview.viewport,
+        Some(map_rect())
+    );
+    assert!(rig.drain().contains(&CpCmd::ClusterActive(true)));
+}
+
+#[tokio::test]
+async fn phone_fallback_never_reuses_the_previous_phones_ready_frame() {
+    let mut rig = Rig::new();
+    rig.p.map_preview(1, Some(map_rect()));
+    rig.connect(1, true);
+    rig.connect(2, true);
+    rig.p.map_video_ready(true);
+    assert!(rig.hub.watch().borrow().map_preview.ready);
+    rig.p.on_event(CpEvent::Disconnected { id: 1 });
+    let preview = rig.hub.watch().borrow().map_preview;
+    assert_eq!(preview.viewport, Some(map_rect()));
+    assert!(!preview.ready);
+    rig.p.map_video_ready(true);
+    assert!(rig.hub.watch().borrow().map_preview.ready);
+    rig.p.on_event(CpEvent::Disconnected { id: 2 });
+    assert_eq!(rig.hub.watch().borrow().map_preview, MapPreview::default());
+    rig.connect(3, true);
+    assert!(!rig.hub.watch().borrow().map_preview.ready);
+}
+
+#[tokio::test]
+async fn call_attention_suspends_and_restores_tile_demand() {
+    let mut rig = Rig::new();
+    rig.connect(1, true);
+    rig.p.map_preview(1, Some(map_rect()));
+    rig.drain();
+    rig.p.attend(Attention::Call, true);
+    assert_eq!(rig.hub.watch().borrow().map_preview, MapPreview::default());
+    assert_eq!(rig.drain(), [CpCmd::ClusterActive(false)]);
+    rig.p.attend(Attention::Call, false);
+    assert_eq!(
+        rig.hub.watch().borrow().map_preview.viewport,
+        Some(map_rect())
+    );
+    assert_eq!(rig.drain(), [CpCmd::ClusterActive(true)]);
+}
+
+#[tokio::test]
+async fn a_navigation_tile_tap_opens_maps_without_a_late_home_request() {
+    let mut rig = Rig::new();
+    rig.connect(1, true);
+    rig.p.map_preview(1, Some(map_rect()));
+    rig.drain();
+    rig.p.open_navigation();
+    assert_eq!(rig.front(), Front::Projection);
+    assert_eq!(rig.hub.watch().borrow().map_preview, MapPreview::default());
+    assert_eq!(
+        rig.drain(),
+        [
+            CpCmd::ClusterActive(false),
+            stack(1, StackCmd::Keyframe),
+            stack(1, StackCmd::RequestUi("maps:".into())),
+        ]
+    );
+    rig.want(Front::Projection);
+    assert!(
+        rig.drain().is_empty(),
+        "a delayed wants update cannot override maps with Home"
+    );
+
+    // HostUiRequested can return to the native UI without changing the watch's
+    // last requested value. A second tap still brings navigation to the front.
+    rig.p.host_ui();
+    rig.drain();
+    rig.p.open_navigation();
+    assert_eq!(rig.front(), Front::Projection);
+    assert!(
+        rig.drain()
+            .contains(&stack(1, StackCmd::RequestUi("maps:".into())))
+    );
+}
+
+#[tokio::test]
+async fn navigation_still_opens_when_the_wants_watch_arrives_before_the_command() {
+    let mut rig = Rig::new();
+    rig.connect(1, true);
+    rig.drain();
+    rig.want(Front::Projection);
+    assert_eq!(
+        rig.drain(),
+        [stack(1, home()), stack(1, StackCmd::Keyframe)]
+    );
+    rig.p.open_navigation();
+    assert_eq!(
+        rig.drain(),
+        [
+            stack(1, StackCmd::Keyframe),
+            stack(1, StackCmd::RequestUi("maps:".into()))
+        ]
+    );
+    rig.want(Front::Projection);
+    assert!(rig.drain().is_empty());
+}
+
 #[test]
 fn the_projection_start_page_shows_a_phone_before_the_ui_reports() {
     let mut cfg = defaults();
@@ -70,6 +343,7 @@ impl Rig {
             now_playing: Default::default(),
             telemetry: Default::default(),
             navigation: Default::default(),
+            map_preview: Default::default(),
             system: Default::default(),
             devices: Default::default(),
             update: Default::default(),

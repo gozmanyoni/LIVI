@@ -15,15 +15,36 @@ import { SettingsView, SettingsState, ScreenKind, RowData, RowKind, PickData, Kn
 import { Dashboard, DashState, GaugeData, CapData, TrailData, LabelData } from "dashboard.slint";
 import { LevelOverlay, PhoneOverlay, OverlayState } from "overlays.slint";
 import { MaskData } from "mask.slint";
+import { HomePage, MapViewport } from "home.slint";
 
-export { Theme, Focus, FocusZone, Page, PhoneState, TabData, TouchPhase, SettingsState, ScreenKind, RowData, RowKind, PickData, KnobData, MediaText, Press, DabState, StationData, DashState, GaugeData, CapData, TrailData, LabelData, OverlayState, MaskData }
+export { MapViewport, Theme, Focus, FocusZone, Page, PhoneState, TabData, TouchPhase, SettingsState, ScreenKind, RowData, RowKind, PickData, KnobData, MediaText, Press, DabState, StationData, DashState, GaugeData, CapData, TrailData, LabelData, OverlayState, MaskData }
 
 export component AppWindow inherits Window {
-    in-out property <Page> page: Page.media;
+    in-out property <Page> page: Page.home;
+    in-out property <int> home-page: 0;
+    out property <bool> home-moving: home.moving;
+    out property <length> home-offset: home.visual-offset;
+    in property <bool> home-media-enabled: true;
+    callback home-open(int);
+    in property <bool> map-preview-ready;
+    in property <MapViewport> map-preview-confirmed;
+    in property <bool> map-preview-enabled: true;
+    out property <MapViewport> map-viewport: {
+        shown: home.map-viewport.shown,
+        x: home.map-viewport.x,
+        y: root.height > 0px ? (root.chrome-height + home.map-viewport.y * home.height) / root.height : 0,
+        width: home.map-viewport.width,
+        height: root.height > 0px ? home.map-viewport.height * home.height / root.height : 0,
+    };
+    callback map-viewport-changed();
+    changed map-viewport => { root.map-viewport-changed(); }
     in property <[TabData]> tabs;
     in property <image> projection-icon;
     in property <PhoneState> phone;
     in property <string> clock;
+    in property <string> calendar-day;
+    in property <string> calendar-month;
+    in property <string> calendar-year;
     in property <bool> right-hand;
     in property <int> stream-width: 1280;
     in property <int> stream-height: 720;
@@ -56,6 +77,8 @@ export component AppWindow inherits Window {
 
     property <bool> nav-hidden: root.page == Page.projection && root.phone == PhoneState.streaming;
     property <bool> nav-asleep;
+    property <bool> drawer-open;
+    property <bool> drawer-visible: !root.nav-hidden && (root.drawer-open || Focus.zone == FocusZone.nav);
 
     public function wake-nav() {
         root.nav-asleep = false;
@@ -78,13 +101,14 @@ export component AppWindow inherits Window {
         }
     }
     changed page => {
+        root.drawer-open = false;
         root.wake-nav();
     }
 
-    title: "LIVI";
+    title: "OpenNBT";
     default-font-family: "Roboto";
-    preferred-width: 1280px;
-    preferred-height: 720px;
+    preferred-width: 1600px;
+    preferred-height: 600px;
     min-width: 320px;
     min-height: 200px;
     background: transparent;
@@ -98,25 +122,98 @@ export component AppWindow inherits Window {
     }
 
     if root.page == Page.telemetry: Dashboard {
+        y: root.chrome-height;
         width: root.width;
-        height: root.height;
+        height: root.height - root.chrome-height;
     }
 
-    HorizontalLayout {
-        if !root.right-hand && !root.nav-hidden: Nav {
-            tabs: root.tabs;
-            active: root.page;
-            phone: root.phone;
-            clock: root.clock;
-            right-hand: false;
-            asleep: root.nav-asleep;
-            select(p) => {
-                root.page = p;
-                root.page-chosen(p);
+    property <length> chrome-height: root.nav-hidden ? 0px : 62px * Ui.nbt-scale;
+    if !root.nav-hidden: Rectangle {
+        y: 0px;
+        height: root.chrome-height;
+        background: Theme.dark ? @linear-gradient(180deg, #18181d, #08080d 58%, #030306) : @linear-gradient(180deg, #eeeeee, #d4d4d8);
+        Image {
+            x: 24px * Ui.nbt-scale;
+            y: 7px * Ui.nbt-scale;
+            width: 46px * Ui.nbt-scale;
+            height: self.width;
+            source: @image-url("assets/bmw-roundel.svg");
+        }
+        TouchArea {
+            x: 12px * Ui.nbt-scale;
+            width: 88px * Ui.nbt-scale;
+            clicked => {
+                if (root.page != Page.home) {
+                    root.page = Page.home;
+                    root.page-chosen(Page.home);
+                    Focus.zone = FocusZone.none;
+                } else {
+                    root.drawer-open = !root.drawer-visible;
+                    Focus.zone = root.drawer-open ? FocusZone.nav : FocusZone.none;
+                }
             }
         }
+        if root.width > 650px: Text {
+            x: 92px * Ui.nbt-scale;
+            text: "M3";
+            color: Theme.text-secondary;
+            font-size: 24px * Ui.nbt-scale;
+            font-weight: 400;
+            vertical-alignment: center;
+        }
+        Text {
+            x: root.width - 500px * Ui.nbt-scale;
+            width: 260px * Ui.nbt-scale;
+            text: root.app != "" ? root.app : "OpenNBT";
+            color: Theme.text-secondary;
+            font-size: 25px * Ui.nbt-scale;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if root.phone != PhoneState.none: Image {
+            x: root.width - 208px * Ui.nbt-scale;
+            width: 26px * Ui.nbt-scale;
+            height: self.width;
+            source: @image-url("icons/BluetoothOutlined.svg");
+            colorize: Theme.text-secondary;
+        }
+        Text {
+            x: root.width - 162px * Ui.nbt-scale;
+            width: 128px * Ui.nbt-scale;
+            text: root.clock;
+            color: Theme.text;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            font-size: 29px * Ui.nbt-scale;
+        }
+    }
+    HorizontalLayout {
+        y: root.chrome-height;
+        height: root.height - root.chrome-height;
         Rectangle {
             horizontal-stretch: 1;
+            home := HomePage {
+                visible: root.page == Page.home;
+                interactive: root.page == Page.home && !root.drawer-visible;
+                // A resize can draw before deferred changed callbacks run.
+                // Never expose a new rectangle using an old acknowledgement.
+                map-preview-ready: root.map-preview-ready && root.map-preview-confirmed == root.map-viewport;
+                map-preview-enabled: root.map-preview-enabled && root.page == Page.home && !root.drawer-visible;
+                width: parent.width;
+                height: parent.height;
+                current-page <=> root.home-page;
+                calendar-day: root.calendar-day;
+                calendar-month: root.calendar-month;
+                calendar-year: root.calendar-year;
+                phone: root.phone;
+                track-title: root.track-title;
+                artist: root.artist;
+                artwork: root.artwork;
+                has-artwork: root.has-artwork;
+                media-enabled: root.home-media-enabled;
+                open(i) => { root.home-open(i); }
+            }
             if root.page == Page.projection: ProjectionPage {
                 width: parent.width;
                 height: parent.height;
@@ -169,17 +266,23 @@ export component AppWindow inherits Window {
                 font-size: 14px;
             }
         }
-        if root.right-hand && !root.nav-hidden: Nav {
-            tabs: root.tabs;
-            active: root.page;
-            phone: root.phone;
-            clock: root.clock;
-            right-hand: true;
-            asleep: root.nav-asleep;
-            select(p) => {
-                root.page = p;
-                root.page-chosen(p);
-            }
+    }
+
+    // The native menu appears on demand; normal ID6 screens have no permanent rail.
+    if root.drawer-visible: Nav {
+        x: root.right-hand ? root.width - self.width : 0px;
+        y: root.chrome-height;
+        height: root.height - root.chrome-height;
+        tabs: root.tabs;
+        active: root.page;
+        phone: root.phone;
+        right-hand: root.right-hand;
+        asleep: false;
+        select(p) => {
+            root.page = p;
+            root.page-chosen(p);
+            root.drawer-open = false;
+            Focus.zone = FocusZone.none;
         }
     }
 

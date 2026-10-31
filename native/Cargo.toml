@@ -9,8 +9,8 @@ femtovg = { path = "vendor/femtovg" }
 [workspace.package]
 version = "10.2.0"
 edition = "2024"
-description = "LIVI - Linux In-Vehicle Infotainment"
-homepage = "https://f-io.dev"
+description = "OpenNBT - BMW E90 infotainment"
+homepage = "https://github.com/gozmanyoni/LIVI"
 authors = ["Lasse Heitgres"]
 license = "GPL-3.0-or-later"
 

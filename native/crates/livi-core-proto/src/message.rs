@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::input::Input;
 use crate::patch::PatchOp;
-use crate::state::{Front, Screen, State};
+use crate::state::{Front, Screen, State, VideoRect};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -19,6 +19,7 @@ pub enum ToCore {
     Path { path: String },
     Spectrum { on: bool },
     LinkSpeed { on: bool },
+    MapPreview { viewport: Option<VideoRect> },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -77,6 +78,7 @@ pub enum Action {
         id: String,
     },
     NextDevice,
+    OpenNavigation,
     SelectClusterLayout {
         layout: String,
     },
@@ -240,5 +242,25 @@ mod tests {
     #[test]
     fn unknown_message_is_rejected() {
         assert!(serde_json::from_value::<ToCore>(json!({ "type": "launchMissiles" })).is_err());
+    }
+
+    #[test]
+    fn map_viewports_round_trip_and_clear_explicitly() {
+        let viewport = VideoRect {
+            x: 0.6,
+            y: 0.2,
+            width: 0.25,
+            height: 0.7,
+        };
+        let msg = ToCore::MapPreview {
+            viewport: Some(viewport),
+        };
+        let wire = serde_json::to_value(&msg).unwrap();
+        assert_eq!(wire["type"], "mapPreview");
+        assert_eq!(serde_json::from_value::<ToCore>(wire).unwrap(), msg);
+        assert_eq!(
+            serde_json::to_value(ToCore::MapPreview { viewport: None }).unwrap(),
+            json!({"type":"mapPreview","viewport":null})
+        );
     }
 }

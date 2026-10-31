@@ -9,6 +9,7 @@ const NEEDS_RESTART: &[&str] = &[
     "wirelessCpEnabled",
     "carPlayHlsVideo",
     "carPlayTheme",
+    "carPlayNavTile",
     "carPlayVehicleModel",
     "carPlayDockPosition",
     "carPlayVehicleClimate",

@@ -1,20 +1,27 @@
-<p align="center">
-  <img alt='LIVI' src='docs/media/banner.png' width="1200" />
-</p>
+# OpenNBT
 
-# LIVI – Linux In-Vehicle Infotainment
-
-LIVI is an open-source **Apple CarPlay and Android Auto head unit**.
-
-It is a standalone cross-platform head unit with a native, zero-copy GStreamer video pipeline and hardware-accelerated decoding across Linux (from x86_64 and arm64 desktops to embedded boards like the Raspberry Pi) and macOS, with low-latency audio, multitouch + D-Pad navigation, and support for very small embedded/OEM displays.
-
-## BMW Pi 5 fork
+An open-source **BMW E90 infotainment interface**, starting with an E90 M3,
+with an NBT Evo ID6-inspired native interface and wireless Apple CarPlay.
 
 Based on LIVI by Lasse Heitgres (https://github.com/f-io/LIVI).
 
-This checkout is the native Rust/Slint foundation for a BMW E9x interface with
-wireless CarPlay. The original CIC remains headless as MOST master and OEM audio
-backend. BMW telemetry, UI and CAN integration are the next development lanes.
+OpenNBT is an independent BMW-inspired fork, not a BMW product or an official
+NBT implementation. It retains LIVI 10.2's native Rust/Slint architecture,
+hardware-accelerated GStreamer video, low-latency audio, touch and D-Pad input,
+and Apple CarPlay and Android Auto connectivity.
+
+![OpenNBT home screen with synthetic preview data](docs/media/opennbt-home.png)
+
+The native interface uses an ID6-style carousel with three live tiles per page,
+glossy red focus headers, graphite panels, a BMW roundel and rendered E90 M3
+artwork. Settings use a split list-and-illustration layout. Menus lead to working native
+features; navigation uses phone projection. See the
+[menu mapping, previews and verification guide](docs/OPENNBT_DESIGN.md).
+The screenshot uses synthetic media data and is not a live vehicle capture.
+
+The original CIC remains headless as MOST master and OEM audio backend. The
+interface is being adapted for the 1600×600 BMW display; live BMW telemetry, CAN
+input and OEM vehicle controls require separate integration and validation.
 See [the project architecture](docs/BMW_CIC_PROJECT.md) and
 [the session handoff](docs/SESSION_HANDOFF.md) before starting work.
 
@@ -25,7 +32,23 @@ supplements the upstream hardware authentication documentation below; acceptance
 on other devices or future iOS versions has not been established.
 [Pi image and measured startup work](scripts/install/pi5-fast/README.md).
 
-## Project Status
+The product name is OpenNBT. Existing `livi-*` binaries, `LIVI` config/runtime
+directories, service names and pairing identities remain compatible with the
+working Pi installation. Repository and package filenames also retain LIVI.
+Software Update checks this fork's releases and nightly channel by default;
+it does not fall back to upstream LIVI. A check may report an error until this
+fork publishes the selected release channel. Existing explicit `UPDATE_FEED`
+and `UPDATE_REPO` overrides still take precedence.
+
+## Upstream foundation
+
+The documentation and screenshots below describe inherited LIVI capabilities;
+they do not establish that equivalent OEM BMW functions have been connected.
+The badges report the upstream project, not OpenNBT's release or test status.
+
+<p align="center">
+  <img alt='LIVI upstream foundation' src='docs/media/banner.png' width="1200" />
+</p>
 
 ![Release](https://img.shields.io/github/v/release/f-io/LIVI?label=release)
 ![Main Version](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/f-io/LIVI/version/.github/badges/main-version.json)
@@ -35,7 +58,7 @@ on other devices or future iOS versions has not been established.
 
 ## Native Connectivity
 
-- **Apple CarPlay** (wired & wireless) on Linux and Mac, requires [MFi Authentication](#mfi-authentication)
+- **Apple CarPlay** (wired & wireless) on Linux and Mac, requires [CarPlay authentication](#carplay-authentication)
 - **Android Auto** (wired & wireless) on Linux and Mac, wireless on Mac requires a [LIVI Link](LIVI-LINK.md)
 
 ## Native Apple CarPlay Ultra
@@ -63,14 +86,22 @@ LIVI implements the CarPlay accessory side natively, wired and wireless, on Linu
 
 Wireless CarPlay requires a Bluetooth and a Wi-Fi interface. Both can come from a [LIVI Link](LIVI-LINK.md), which brings its own radios. Wired CarPlay works on any USB port.
 
-## MFi Authentication
+## CarPlay authentication
 
-CarPlay requires the accessory to authenticate against the phone. The usual way is an Apple **MFi authentication coprocessor**, a hardware chip that cannot be emulated and that LIVI neither ships nor bypasses. Two routes:
+CarPlay requires the accessory to authenticate against the phone. The tested
+OpenNBT Pi installation uses LIVI's file-backed authentication with a private
+certificate **and its matching private key**, without an MFi chip or dongle.
+Those identity files are not included in this repository or public packages.
+The local test result does not establish acceptance on other phones or future
+iOS versions.
+
+The upstream hardware authentication routes remain available:
 
 - **On the board**: a coprocessor wired to the I²C bus
 - **Over the network**: a [LIVI Link](LIVI-LINK.md)
 
-Both routes work on Linux. A Mac has no I²C bus to put a coprocessor on, so there the LIVI Link is the only one.
+Both hardware routes work on Linux. A Mac has no I²C bus for an onboard
+coprocessor; LIVI Link is the upstream hardware option there.
 
 LIVI does not support Apple's Basic Accessory Authentication on MacOS, but may in the future.
 
@@ -81,7 +112,8 @@ For a chip on the board, configuration (`config.json`):
 | `carPlayMfiI2cBus`    | `2`     | I²C bus number the coprocessor is on |
 | `carPlayMfiPowerGpio` | `21`    | GPIO that powers the coprocessor     |
 
-Without one of these, native CarPlay is unavailable. All Android Auto paths work regardless.
+Native CarPlay needs a usable authentication backend. Android Auto does not
+use this authentication backend.
 
 ## Wireless
 
@@ -293,7 +325,14 @@ Video: 1920x1080 - View Area: 0/0/0/0 (T/B/L/R) - Safe Area: 120/20/500/500 (T/B
 
 ## Installation
 
-One script installs LIVI on both desktop and headless hosts, auto-detecting which (override with `--desktop` / `--headless`). It uses apt, dnf or pacman, it runs on Debian/Ubuntu, Fedora, Arch and likely other distros, on arm64 and x86_64.
+The existing Pi installation is retained; this rename does not migrate its
+configuration, pairing or private authentication files. For the private Pi image
+workflow, see [the Pi build instructions](scripts/install/pi5-fast/README.md).
+
+The following **upstream LIVI installer** installs upstream releases, without
+OpenNBT's BMW interface or private authentication identity. It supports desktop
+and headless hosts, auto-detecting which (override with `--desktop` /
+`--headless`), using apt, dnf or pacman on arm64 and x86_64.
 
 ```bash
 curl -fL -o install.sh https://raw.githubusercontent.com/f-io/LIVI/main/scripts/install/install.sh
@@ -385,7 +424,7 @@ On macOS, building needs Rust and the GStreamer framework (runtime and devel pkg
 
 ```bash
 # Git clone
-git clone --branch main --single-branch https://github.com/f-io/LIVI.git \
+git clone --branch main --single-branch https://github.com/gozmanyoni/LIVI.git \
   && cd LIVI
 
 cd native
@@ -413,11 +452,11 @@ See [CREDITS](CREDITS.md) for acknowledgements and prior art.
 
 ## Disclaimer
 
-_Apple and CarPlay are trademarks of Apple Inc. Android and Android Auto are trademarks of Google LLC. This project is not affiliated with or endorsed by Apple or Google. All product names, logos, and brands are the property of their respective owners._
+_BMW, M3, iDrive and NBT are trademarks of BMW AG. Apple and CarPlay are trademarks of Apple Inc. Android and Android Auto are trademarks of Google LLC. OpenNBT is not affiliated with or endorsed by BMW, Apple or Google. All product names, logos, and brands are the property of their respective owners._
 
 ## License
 
-LIVI is free software, licensed under the **GNU General Public License v3.0 or later** (`GPL-3.0-or-later`). See [LICENSE](LICENSE) for the full text.
+OpenNBT is free software, based on LIVI and licensed under the **GNU General Public License v3.0 or later** (`GPL-3.0-or-later`). See [LICENSE](LICENSE) for the full text.
 
 Under section 7(b) of the GPL, [NOTICE](NOTICE) adds one term: works based on LIVI, including ports to other languages, keep the attribution "Based on LIVI by Lasse Heitgres".
 

@@ -17,8 +17,8 @@ exec "$HERE/resources/core/livi-core"
 "#;
 
 const DESKTOP: &str = "[Desktop Entry]
-Name=LIVI
-Comment=Linux In-Vehicle Infotainment
+Name=OpenNBT
+Comment=BMW E90 infotainment
 Exec=AppRun %U
 Icon=livi
 Type=Application

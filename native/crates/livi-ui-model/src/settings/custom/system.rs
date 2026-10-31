@@ -38,6 +38,11 @@ pub fn about(t: &Strings, f: &Facts) -> Vec<Row> {
             or_dash(&f.copyright),
         ),
         info(
+            "Upstream attribution".into(),
+            None,
+            "Based on LIVI by Lasse Heitgres (https://github.com/f-io/LIVI)".into(),
+        ),
+        info(
             t.t("settings.license", "License"),
             None,
             or_dash(&f.license),
@@ -363,9 +368,18 @@ mod tests {
     fn about_shows_the_legal_notices() {
         let rows = about(&Strings::new("en"), &facts());
         let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
-        for label in ["Source code", "Copyright", "License", "Warranty"] {
+        for label in [
+            "Source code",
+            "Copyright",
+            "Upstream attribution",
+            "License",
+            "Warranty",
+        ] {
             assert!(labels.contains(&label), "{label} missing");
         }
+        assert!(rows.iter().any(
+            |row| row.value == "Based on LIVI by Lasse Heitgres (https://github.com/f-io/LIVI)"
+        ));
     }
 
     #[test]

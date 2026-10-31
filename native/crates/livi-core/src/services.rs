@@ -178,6 +178,7 @@ impl Services {
         let gst = GstHost::new(runtime.join("gst.sock"));
         gst.set_launch(host_launch(&res, user_data, None));
         let plane = MainPlane::new(gst.clone(), ctrl.clone());
+        let video = VideoPlane::new(gst.clone(), ctrl.clone());
         let clusters = ClusterPlanes::new(gst.clone(), ctrl.clone());
 
         let (host_ready, host_ready_rx) = watch::channel(compositor.is_none());
@@ -235,6 +236,7 @@ impl Services {
                 helper_restart,
                 telemetry,
                 settings,
+                video: video.clone(),
             };
             carplay.start(hub, &ctrl, &gst, plane.clone(), clusters.clone(), asks);
         }
@@ -250,6 +252,7 @@ impl Services {
             state.clone(),
             ctrl,
             plane.clone(),
+            video,
             clusters.clone(),
         ));
         tokio::spawn(follow_audio_output(state.clone(), gst.clone()));
@@ -291,6 +294,7 @@ fn carplay_listener() -> Option<TcpListener> {
 }
 
 struct CarPlay {
+    video: Arc<VideoPlane>,
     listener: TcpListener,
     identity: livi_cp::identity::Identity,
     accessory: String,
@@ -331,7 +335,7 @@ impl CarPlay {
             identity: self.identity,
             pairings: Pairings::new(self.user_data.join("cp/pairings.json")),
             helper: HelperSock::default(),
-            media: GstMedia::new(gst.clone(), VideoPlane::new(gst.clone(), ctrl.clone())),
+            media: GstMedia::new(gst.clone(), self.video),
             config,
             refresh: Some(Arc::new(move || refreshing.refresh())),
             debug: self.debug,
@@ -450,6 +454,7 @@ async fn follow_state(
     mut state: watch::Receiver<State>,
     ctrl: CompositorControl,
     plane: Arc<MainPlane>,
+    video: Arc<VideoPlane>,
     clusters: Arc<ClusterPlanes>,
 ) {
     let mut last: Option<State> = None;
@@ -489,10 +494,18 @@ async fn follow_state(
         }
         if last.as_ref().is_none_or(|l| l.front.main != now.front.main) {
             plane.set_visible(now.front.main == Front::Projection);
+            video.set_presented(now.front.main == Front::Projection);
         }
-        if last.as_ref().is_none_or(|l| l.front != now.front) {
+        let preview_changed = last
+            .as_ref()
+            .is_none_or(|l| l.map_preview.viewport != now.map_preview.viewport);
+        // Projection owns placement before publishing state. This follower only
+        // mirrors visibility, so an older watch snapshot cannot restore an old box.
+        if preview_changed || last.as_ref().is_none_or(|l| l.front != now.front) {
             let f = &now.front;
-            clusters.show_on([f.main, f.cluster, f.aux].map(|f| f == Front::Cluster));
+            let mut shown = [f.main, f.cluster, f.aux].map(|f| f == Front::Cluster);
+            shown[0] |= now.map_preview.viewport.is_some();
+            clusters.show_on(shown);
         }
         last = Some(now);
         if state.changed().await.is_err() {
@@ -629,6 +642,73 @@ fn place_carplay(plane: &MainPlane, cfg: &Config) {
 mod tests {
     use super::*;
     use crate::config_file::defaults;
+
+    #[tokio::test]
+    async fn playback_picture_follows_projection_instead_of_native_or_camera_screens() {
+        use livi_core_proto::state::PerScreen;
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        use tokio::net::UnixListener;
+
+        let dir = crate::config_file::tests::TempDir::new();
+        let listener = UnixListener::bind(dir.0.join("ctrl")).unwrap();
+        let ctrl = CompositorControl::connect(dir.0.join("ctrl"));
+        let gst = GstHost::new(dir.0.join("gst.sock"));
+        let plane = MainPlane::new(gst.clone(), ctrl.clone());
+        let video = VideoPlane::new(gst.clone(), ctrl.clone());
+        let clusters = ClusterPlanes::new(gst, ctrl.clone());
+        let state = State {
+            front: PerScreen {
+                main: Front::Livi,
+                cluster: Front::Livi,
+                aux: Front::Livi,
+            },
+            sessions: Default::default(),
+            now_playing: Default::default(),
+            telemetry: Default::default(),
+            navigation: Default::default(),
+            map_preview: Default::default(),
+            system: Default::default(),
+            devices: Default::default(),
+            update: Default::default(),
+            cluster: Default::default(),
+            dab: Default::default(),
+            cameras: Vec::new(),
+            mfi: Default::default(),
+            config: defaults(),
+        };
+        let (tx, rx) = watch::channel(state);
+        let following = tokio::spawn(follow_state(rx, ctrl, plane, video, clusters));
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut lines = BufReader::new(socket).lines();
+        // Check the initial Home snapshot, then every transition through the
+        // real state follower and compositor wire, without a running phone.
+        for front in [
+            Front::Livi,
+            Front::Projection,
+            Front::Camera,
+            Front::Cluster,
+            Front::Livi,
+            Front::Projection,
+        ] {
+            tx.send_modify(|state| state.front.main = front);
+            let expected = format!("videoshow video {}", u8::from(front == Front::Projection));
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let line = lines.next_line().await.unwrap().unwrap();
+                    if line == expected {
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap();
+        }
+        drop(tx);
+        tokio::time::timeout(Duration::from_secs(5), following)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 
     #[test]
     fn carplay_tier_falls_back_to_1080p() {

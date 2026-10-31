@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Additional terms: see NOTICE
 
-use smithay::backend::renderer::utils::on_commit_buffer_handler;
+use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
 use smithay::input::pointer::{CursorIcon, CursorImageStatus};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecoMode;
@@ -14,7 +14,7 @@ use smithay::reexports::wayland_server::{Client, Resource};
 use smithay::utils::{Point, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
-    add_blocker, add_pre_commit_hook, get_parent, is_sync_subsurface, with_states, CompositorClientState,
+    add_blocker, add_pre_commit_hook, get_children, get_parent, is_sync_subsurface, with_states, CompositorClientState,
     CompositorHandler, CompositorState,
 };
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
@@ -87,6 +87,20 @@ impl CompositorHandler for LiviState {
             .position(|t| t.toplevel.wl_surface() == &root)
         {
             classify_on_initial_commit(self, idx);
+            if self.toplevels[idx].kind == Kind::Video {
+                let ready = video_has_buffer(&root);
+                let size = crate::render::surface_size(&root);
+                let t = &mut self.toplevels[idx];
+                let line = t
+                    .video_status
+                    .buffer_committed(ready, size)
+                    .and_then(|ready| {
+                        (!t.tag.is_empty()).then(|| t.video_status.readiness_line(&t.tag, ready))
+                    });
+                if let Some(line) = line {
+                    crate::ctrl::send(self, &line);
+                }
+            }
             if self.toplevels[idx].kind == Kind::Ui {
                 self.toplevels[idx].clear = crate::projection::ui_clear(&root);
                 if self.toplevels[idx].screen_idx == 0 && crate::boot_trace::enabled() {
@@ -100,6 +114,20 @@ impl CompositorHandler for LiviState {
             crate::host::damage_all(self);
         }
     }
+}
+
+fn video_has_buffer(surface: &WlSurface) -> bool {
+    let mapped = with_renderer_surface_state(surface, |s| {
+        s.buffer().is_some()
+            && s.surface_size()
+                .is_some_and(|size| size.w > 0 && size.h > 0)
+    })
+    .unwrap_or(false);
+    let children = get_children(surface);
+    // waylandsink can put its video in a subsurface above a persistent background.
+    // Both the root and the video must remain mapped; a detached frame must not
+    // stay ready merely because the black background (or an old child) survives.
+    mapped && (children.is_empty() || children.iter().any(video_has_buffer))
 }
 
 fn classify_on_initial_commit(state: &mut LiviState, idx: usize) {
@@ -129,14 +157,30 @@ fn classify_on_initial_commit(state: &mut LiviState, idx: usize) {
     let is_video = app_id.as_deref() == Some("livi-video");
     if is_video {
         state.toplevels[idx].kind = Kind::Video;
-        if let Some(tag) = state.pending_video_tags.pop_front() {
+        if let Some((tag, generation)) = state.pending_video_tags.pop_front() {
             state.toplevels[idx].tag = tag.clone();
+            let latest = state
+                .video_cfgs
+                .iter()
+                .find(|cfg| cfg.tag == tag)
+                .map_or(0, |cfg| cfg.generation);
+            let current = state.toplevels[idx]
+                .video_status
+                .bind_pending_generation(generation, latest);
             log::info!(
                 "bound '{tag}' (pending left: {:?})",
                 state.pending_video_tags
             );
-            crate::ctrl::send(state, &format!("bound {tag}\n"));
-            drop_stale_planes(state, idx, &tag);
+            crate::ctrl::send(state, &format!("bound {tag} {generation}\n"));
+            if !current {
+                state.toplevels[idx].visible = false;
+            } else {
+                drop_stale_planes(state, idx, &tag);
+            }
+            let readiness = state.toplevels[idx]
+                .video_status
+                .readiness_line(&tag, false);
+            crate::ctrl::send(state, &readiness);
         }
         state.toplevels[idx].screen_idx = 0;
         if state.toplevels[idx].tag.is_empty() {
@@ -225,29 +269,67 @@ fn stack_video(state: &mut LiviState, idx: usize) {
 fn drop_stale_planes(state: &mut LiviState, keep: usize, tag: &str) {
     for (i, t) in state.toplevels.iter_mut().enumerate() {
         if i != keep && t.kind == Kind::Video && t.tag == tag {
-            t.tag.clear();
+            t.video_status.retire();
             t.visible = false;
+            t.awaiting_claim = false;
         }
     }
 }
 
-pub fn bind_waiting_plane(state: &mut LiviState, tag: &str) -> bool {
+pub fn retire_video_tag(state: &mut LiviState, tag: &str, generation: u64) {
+    let mut lines = String::new();
+    for t in &mut state.toplevels {
+        if t.kind == Kind::Video && t.tag == tag && t.video_status.generation <= generation {
+            if t.video_status.retire() {
+                lines.push_str(&t.video_status.readiness_line(tag, false));
+            }
+            t.visible = false;
+            t.awaiting_claim = false;
+        }
+    }
+    if !lines.is_empty() {
+        crate::ctrl::send(state, &lines);
+        crate::host::damage_all(state);
+    }
+}
+
+pub fn bind_waiting_plane(state: &mut LiviState, tag: &str, generation: u64) -> bool {
+    if state
+        .video_cfgs
+        .iter()
+        .any(|cfg| cfg.tag == tag && cfg.generation > generation)
+    {
+        return false;
+    }
     let Some(idx) = state
         .toplevels
         .iter()
-        .rposition(|t| t.kind == Kind::Video && t.awaiting_claim)
+        .rposition(|t| t.kind == Kind::Video && t.awaiting_claim && !t.video_status.retired)
     else {
         return false;
     };
 
     state.toplevels[idx].tag = tag.to_string();
+    let latest = state
+        .video_cfgs
+        .iter()
+        .find(|cfg| cfg.tag == tag)
+        .map_or(0, |cfg| cfg.generation);
+    if !state.toplevels[idx]
+        .video_status
+        .bind_generation(generation, latest)
+    {
+        state.toplevels[idx].visible = false;
+    }
     state.toplevels[idx].awaiting_claim = false;
+    state.toplevels[idx].video_status.invalidate_placement();
     drop_stale_planes(state, idx, tag);
 
     state.video_order.retain(|&i| i != idx);
     stack_video(state, idx);
 
-    crate::ctrl::send(state, &format!("bound {tag}\n"));
+    crate::ctrl::send(state, &format!("bound {tag} {generation}\n"));
+    crate::ctrl::send(state, &format!("videoready {tag} {generation} 0\n"));
     crate::layout::apply_cfg_to_video(state, tag, idx);
     true
 }
@@ -298,6 +380,8 @@ impl XdgShellHandler for LiviState {
             vis_h: 0.0,
             tier_w: 0.0,
             tier_h: 0.0,
+            destination: None,
+            video_status: Default::default(),
             position: Point::from((0, 0)),
             clear: false,
         });
@@ -329,6 +413,12 @@ impl XdgShellHandler for LiviState {
         let screen_idx = self.toplevels[idx].screen_idx;
         if was == Kind::Video {
             log::info!("video plane '{}' gone", self.toplevels[idx].tag);
+            if !self.toplevels[idx].tag.is_empty() && self.toplevels[idx].video_status.retire() {
+                let line = self.toplevels[idx]
+                    .video_status
+                    .readiness_line(&self.toplevels[idx].tag, false);
+                crate::ctrl::send(self, &line);
+            }
         }
         let had_focus = self
             .seat
@@ -526,5 +616,14 @@ mod tests {
         assert!(video_rank("video") > video_rank("main"));
         assert!(video_rank("main") > video_rank("cluster-main"));
         assert_eq!(video_rank(""), video_rank("cluster-cluster"));
+    }
+
+    #[test]
+    fn readiness_tracks_buffer_arrival_and_loss_without_repeating_frames() {
+        let mut video = crate::state::VideoStatus::default();
+        assert_eq!(video.committed(true), Some(true));
+        assert_eq!(video.committed(true), None);
+        assert_eq!(video.committed(false), Some(false));
+        assert_eq!(video.committed(false), None);
     }
 }

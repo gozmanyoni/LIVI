@@ -74,14 +74,18 @@ export component RowFrame inherits Rectangle {
     in property <bool> badge-has-logo;
     in property <image> badge-logo;
     out property <bool> active: touch.pressed || touch.has-hover || root.focused;
+    out property <bool> highlighted: root.active && (root.clickable || root.focused);
     callback clicked();
 
     height: Metrics.row-h;
-    background: Theme.paper;
-    border-top-left-radius: root.first ? 10px : 0;
-    border-top-right-radius: root.first ? 10px : 0;
-    border-bottom-left-radius: root.last ? 10px : 0;
-    border-bottom-right-radius: root.last ? 10px : 0;
+    background: root.highlighted ? Theme.selection : transparent;
+    border-width: root.highlighted ? 1px : 0px;
+    border-color: Theme.selection-edge;
+    Rectangle {
+        x: 0px;
+        width: 4px;
+        background: root.highlighted ? #ff7138 : transparent;
+    }
     opacity: root.enabled ? 1 : 0.45;
 
     touch := TouchArea {
@@ -100,7 +104,7 @@ export component RowFrame inherits Rectangle {
                 width: Metrics.row-icon;
                 height: Metrics.row-icon;
                 source: root.icon;
-                colorize: root.icon-tint;
+                colorize: root.highlighted ? #ffffff : root.icon-tint;
             }
             if root.has-badge: StationBadge {
                 size: Metrics.row-icon + 4px;
@@ -117,7 +121,7 @@ export component RowFrame inherits Rectangle {
             padding-right: Metrics.row-pad;
             Text {
                 text: root.label;
-                color: root.alert ? #f44336 : root.active && (root.clickable || root.focused) ? Theme.primary : Theme.text-secondary;
+                color: root.highlighted ? #ffffff : root.alert ? #f44336 : Theme.text;
                 font-size: Metrics.row-font;
                 vertical-alignment: center;
                 overflow: elide;
@@ -128,10 +132,10 @@ export component RowFrame inherits Rectangle {
 
     if !root.last: Rectangle {
         x: Metrics.row-inset;
-        y: parent.height - 2px;
+        y: parent.height - 1px;
         width: parent.width - Metrics.row-inset - Metrics.row-inset-r;
-        height: 2px;
-        background: Theme.divider;
+        height: 1px;
+        background: transparent;
     }
 }
 
@@ -143,7 +147,7 @@ export component Chevron inherits Rectangle {
         width: Metrics.icon-px;
         height: Metrics.icon-px;
         source: @image-url("../icons/ArrowForwardIosOutlined.svg");
-        colorize: root.active ? Theme.primary : Theme.text;
+        colorize: root.active ? #ffffff : Theme.text;
         animate x { duration: 300ms; easing: ease-in-out; }
     }
 }
@@ -202,7 +206,7 @@ export component SettingsRow inherits RowFrame {
     }
     if root.data.value != "" && root.data.kind != RowKind.slider: Text {
         text: root.data.value;
-        color: Theme.text;
+        color: root.highlighted ? #ffffff : Theme.text;
         font-family: root.data.mono ? "monospace" : "Roboto";
         font-size: Metrics.row-font;
         vertical-alignment: center;
@@ -214,7 +218,7 @@ export component SettingsRow inherits RowFrame {
         y: (parent.height - self.height) / 2;
         width: Metrics.swatch-w;
         height: Metrics.swatch-h;
-        border-radius: 6px;
+        border-radius: 0px;
         border-width: 1px;
         border-color: #80808080;
         background: root.data.swatch;
@@ -262,11 +266,11 @@ export component SettingsRow inherits RowFrame {
         horizontal-stretch: 0;
         spacing: 2px;
         for t[j] in root.data.tools: Rectangle {
-            width: t.switch ? 58px : Metrics.icon-px + 4px + (Ui.width < 600px ? 4px : 12px);
+            width: Metrics.touch-size;
             if t.switch: Rectangle {
                 y: (parent.height - self.height) / 2;
-                height: 38px;
-                border-radius: 19px;
+                height: Metrics.touch-size;
+                border-radius: 0px;
                 border-width: root.focus-tool == j ? 2px : 0;
                 border-color: Theme.primary;
                 Switch {

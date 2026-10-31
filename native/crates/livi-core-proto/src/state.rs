@@ -26,6 +26,73 @@ pub struct State {
     pub cluster: Cluster,
     pub dab: Dab,
     pub config: Config,
+    #[serde(default)]
+    pub map_preview: MapPreview,
+}
+
+/// A destination within the main UI content area, independent of its pixel size.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct VideoRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl VideoRect {
+    pub fn valid(self) -> bool {
+        [self.x, self.y, self.width, self.height]
+            .into_iter()
+            .all(f64::is_finite)
+            && self.x >= 0.0
+            && self.y >= 0.0
+            && self.width > 0.0
+            && self.height > 0.0
+            && self.x + self.width <= 1.0
+            && self.y + self.height <= 1.0
+    }
+}
+
+#[cfg(test)]
+mod viewport_tests {
+    use super::VideoRect;
+
+    #[test]
+    fn video_rectangles_cannot_escape_or_corrupt_the_display() {
+        let full = VideoRect {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+        };
+        assert!(full.valid());
+        for rect in [
+            VideoRect { x: -0.1, ..full },
+            VideoRect {
+                y: f64::NAN,
+                ..full
+            },
+            VideoRect {
+                width: f64::INFINITY,
+                ..full
+            },
+            VideoRect {
+                height: 0.0,
+                ..full
+            },
+            VideoRect { x: 0.01, ..full },
+        ] {
+            assert!(!rect.valid());
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MapPreview {
+    pub viewport: Option<VideoRect>,
+    /// True only after the compositor receives a valid video buffer.
+    pub ready: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

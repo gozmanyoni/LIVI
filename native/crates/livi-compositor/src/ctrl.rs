@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction};
 
-use crate::state::LiviState;
+use crate::state::{Kind, LiviState, VideoBox};
 
 pub fn leave_with_core(handle: &LoopHandle<'static, LiviState>) {
     if !std::env::var("LIVI_LIFELINE").is_ok_and(|v| v == "1") {
@@ -61,6 +61,7 @@ pub fn init(state: &mut LiviState, handle: &LoopHandle<'static, LiviState>) {
                     send_ui(state);
                     send_panels(state);
                     send_displays(state);
+                    send_video_readiness(state);
                 }
                 Ok(PostAction::Continue)
             },
@@ -167,6 +168,48 @@ fn send_ui(state: &mut LiviState) {
     send(state, &line);
 }
 
+fn send_video_readiness(state: &mut LiviState) {
+    let lines: String = state
+        .toplevels
+        .iter()
+        .filter(|t| t.kind == Kind::Video && !t.tag.is_empty() && !t.video_status.retired)
+        .map(|t| t.video_status.readiness_line(&t.tag, t.video_status.ready))
+        .collect();
+    send(state, &lines);
+}
+
+fn parse_video_box(words: &[&str]) -> Option<Option<VideoBox>> {
+    if words == ["-"] {
+        return Some(None);
+    }
+    let [x, y, w, h] = words else { return None };
+    Some(Some(VideoBox::new(
+        x.parse().ok()?,
+        y.parse().ok()?,
+        w.parse().ok()?,
+        h.parse().ok()?,
+    )?))
+}
+
+fn parse_generation(words: &[&str], current: u64) -> Option<u64> {
+    match words {
+        [] => Some(current),
+        [generation] => generation.parse().ok(),
+        _ => None,
+    }
+}
+
+fn parse_box_command(words: &[&str], current: u64) -> Option<(Option<VideoBox>, u64)> {
+    let count = if words.first() == Some(&"-") { 1 } else { 4 };
+    if words.len() < count {
+        return None;
+    }
+    Some((
+        parse_video_box(&words[..count])?,
+        parse_generation(&words[count..], current)?,
+    ))
+}
+
 pub fn send_displays(state: &mut LiviState) {
     if let Some(lines) = crate::drm::displays_lines(state) {
         send(state, &lines);
@@ -251,10 +294,24 @@ fn handle_line(state: &mut LiviState, line: &str) {
         }
         Some("claim") => {
             if let Some(tag) = parts.next() {
-                if crate::shell::bind_waiting_plane(state, tag) {
+                let cfg = state.cfg_for_tag(tag);
+                let Some(generation) = parse_generation(&parts.collect::<Vec<_>>(), cfg.generation)
+                else {
+                    return;
+                };
+                if cfg.accept_generation(generation).is_none() {
+                    return;
+                }
+                // A replacement claim supersedes the old queued owner of this tag.
+                state
+                    .pending_video_tags
+                    .retain(|(pending, _)| pending != tag);
+                if crate::shell::bind_waiting_plane(state, tag, generation) {
                     log::info!("ctrl < claim {tag} (took the plane already waiting)");
                 } else if state.pending_video_tags.len() < 16 {
-                    state.pending_video_tags.push_back(tag.to_string());
+                    state
+                        .pending_video_tags
+                        .push_back((tag.to_string(), generation));
                     log::info!(
                         "ctrl < claim {tag} (pending: {:?})",
                         state.pending_video_tags
@@ -264,7 +321,18 @@ fn handle_line(state: &mut LiviState, line: &str) {
         }
         Some("unclaim") => {
             if let Some(tag) = parts.next() {
-                state.pending_video_tags.retain(|t| t != tag);
+                let cfg = state.cfg_for_tag(tag);
+                let Some(generation) = parse_generation(&parts.collect::<Vec<_>>(), cfg.generation)
+                else {
+                    return;
+                };
+                if cfg.accept_generation(generation).is_none() {
+                    return;
+                }
+                state
+                    .pending_video_tags
+                    .retain(|(t, pending)| t != tag || *pending > generation);
+                crate::shell::retire_video_tag(state, tag, generation);
                 log::info!(
                     "ctrl < unclaim {tag} (pending: {:?})",
                     state.pending_video_tags
@@ -294,6 +362,39 @@ fn handle_line(state: &mut LiviState, line: &str) {
             }
             if let Some(v) = state.find_video_by_tag(&tag) {
                 crate::layout::apply_cfg_to_video(state, &tag, v);
+            }
+        }
+        Some("videobox") => {
+            let (Some(tag), Some(screen)) = (parts.next(), parts.next()) else {
+                return;
+            };
+            if state.screen_idx_by_role(screen).is_none() {
+                return;
+            }
+            let cfg = state.cfg_for_tag(tag);
+            let Some((destination, generation)) =
+                parse_box_command(&parts.collect::<Vec<_>>(), cfg.generation)
+            else {
+                return;
+            };
+            let Some(new_generation) = cfg.accept_generation(generation) else {
+                return;
+            };
+            log::info!("ctrl < {line}");
+            let changed = cfg.set_destination(screen, destination) || new_generation;
+            if let Some(v) = state.find_video_by_tag(tag) {
+                state.toplevels[v]
+                    .video_status
+                    .advance_generation(generation);
+                if changed {
+                    state.toplevels[v].video_status.invalidate_placement();
+                }
+                crate::layout::apply_cfg_to_video(state, tag, v);
+            }
+            if changed {
+                // Acknowledge that placement has been applied before permitting
+                // a later matching-size video buffer to reopen the UI aperture.
+                send(state, &format!("videoready {tag} {generation} 0\n"));
             }
         }
         Some("videoshow") => {
@@ -377,5 +478,52 @@ fn handle_line(state: &mut LiviState, line: &str) {
             crate::host::damage_all(state);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn video_boxes_accept_only_bounded_finite_coordinates_or_explicit_reset() {
+        assert_eq!(parse_video_box(&["-"]), Some(None));
+        assert_eq!(
+            parse_video_box(&["0.5", "0.1", "0.25", "0.8"]),
+            Some(VideoBox::new(0.5, 0.1, 0.25, 0.8))
+        );
+        for words in [
+            vec!["0", "0", "1", "1", "extra"],
+            vec!["-", "extra"],
+            vec!["0", "0", "broken", "1"],
+            vec!["NaN", "0", "1", "1"],
+            vec!["0", "0", "inf", "1"],
+            vec!["-0.1", "0", "1", "1"],
+            vec!["0", "0", "0", "1"],
+            vec!["0.9", "0", "0.2", "1"],
+            vec!["0", "0.5", "1", "0.6"],
+        ] {
+            assert_eq!(parse_video_box(&words), None, "{words:?}");
+        }
+    }
+
+    #[test]
+    fn viewport_generation_is_optional_for_legacy_commands_and_strict_when_present() {
+        let viewport = VideoBox::new(0.5, 0.1, 0.25, 0.8);
+        assert_eq!(
+            parse_box_command(&["0.5", "0.1", "0.25", "0.8", "9"], 3),
+            Some((viewport, 9))
+        );
+        assert_eq!(
+            parse_box_command(&["0.5", "0.1", "0.25", "0.8"], 3),
+            Some((viewport, 3))
+        );
+        assert_eq!(parse_box_command(&["-", "12"], 3), Some((None, 12)));
+        assert_eq!(parse_box_command(&["-"], 3), Some((None, 3)));
+        assert_eq!(parse_box_command(&["-", "broken"], 3), None);
+        assert_eq!(parse_box_command(&["-", "-1"], 3), None);
+        assert_eq!(parse_box_command(&["-", "9", "extra"], 3), None);
+        assert_eq!(parse_generation(&["9"], 3), Some(9));
+        assert_eq!(parse_generation(&[], 3), Some(3));
     }
 }

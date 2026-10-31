@@ -19,7 +19,8 @@ use livi_core_proto::config::{Config, KeyBindings};
 use livi_core_proto::input::{Input, Phase, Point};
 use livi_core_proto::message::{MediaControl, Radio};
 use livi_core_proto::state::{
-    Front, Navigation, NowPlaying, PerScreen, Protocol, Screen, Sessions, State,
+    Front, MapPreview, Navigation, NowPlaying, PerScreen, Protocol, Screen, Sessions, State,
+    VideoRect,
 };
 use livi_core_proto::theme::{AppearancePreference, Cluster, LayoutSlot, Theme, livi_theme};
 use livi_cp::helper_sock::HelperSock;
@@ -50,6 +51,7 @@ mod audio;
 mod cluster;
 mod cp;
 mod input;
+mod map_preview;
 mod screens;
 mod sessions;
 mod state;
@@ -441,6 +443,11 @@ pub struct Projection {
     helper_restart: Arc<Notify>,
     devices: Devices,
     cluster_on: bool,
+    aa_cluster_on: bool,
+    map_preview_owner: Option<u64>,
+    map_preview_latest_owner: Option<u64>,
+    map_preview_requested: Option<VideoRect>,
+    map_preview_ready: bool,
     sessions: Vec<Entry>,
     next_index: u32,
     video_owner: Option<Link>,
@@ -481,6 +488,12 @@ pub enum UiCommand {
     ForgetDevice(String),
     CameraFound(bool),
     OpenApp(String),
+    OpenNavigation,
+    MapPreview {
+        owner: u64,
+        viewport: Option<VideoRect>,
+    },
+    MapPreviewGone(u64),
 }
 
 fn kept_cluster(cfg: &Config, theme: Theme) -> Cluster {
@@ -611,6 +624,11 @@ impl Projection {
             helper_restart,
             devices,
             cluster_on,
+            aa_cluster_on: cluster_on,
+            map_preview_owner: None,
+            map_preview_latest_owner: None,
+            map_preview_requested: None,
+            map_preview_ready: false,
             sessions: Vec::new(),
             next_index: 1,
             video_owner: None,
@@ -648,6 +666,8 @@ impl Projection {
     ) {
         let mut created = Some(self.plane.player_created());
         let mut cluster_created = Some(self.clusters.player_created());
+        let mut video_ready = self.clusters.video_ready();
+        let mut video_ready_open = true;
         let mut back = self
             .phone_back
             .take()
@@ -700,6 +720,9 @@ impl Projection {
                     UiCommand::ForgetDevice(id) => self.forget_device(&id),
                     UiCommand::CameraFound(found) => self.camera_found(found),
                     UiCommand::OpenApp(target) => self.open_app(&target),
+                    UiCommand::OpenNavigation => self.open_navigation(),
+                    UiCommand::MapPreview { owner, viewport } => self.map_preview(owner, viewport),
+                    UiCommand::MapPreviewGone(owner) => self.map_preview_gone(owner),
                 },
                 Some(input) = asks.input.recv() => self.input(input),
                 Some(done) = asks.goodbye.recv() => self.goodbye(done),
@@ -723,6 +746,15 @@ impl Projection {
                     Ok(()) => self.keyframe(),
                     Err(broadcast::error::RecvError::Lagged(_)) => {}
                     Err(broadcast::error::RecvError::Closed) => cluster_created = None,
+                },
+                changed = video_ready.changed(), if video_ready_open => {
+                    if changed.is_ok() {
+                        let ready = video_ready.borrow_and_update().contains("cluster-main");
+                        self.map_video_ready(ready);
+                    } else {
+                        video_ready_open = false;
+                        self.map_video_ready(false);
+                    }
                 },
             }
         }

@@ -131,6 +131,7 @@ mod tests {
         config.camera_rotation = 180;
         config.camera_mirror = true;
         State {
+            map_preview: Default::default(),
             front: livi_core_proto::state::PerScreen {
                 main: front,
                 cluster: Front::Livi,

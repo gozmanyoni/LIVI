@@ -2,14 +2,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Additional terms: see NOTICE
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use livi_core_proto::state::VideoRect;
 use livi_host_proto::{
     CAMERA_TAG, CLUSTER_PLANE_MIN, CameraOrder, MAIN_TAG, PLANE_CAMERA, PLANE_MAIN, PLANE_VIDEO,
     SCREENS, VIDEO_TAG,
 };
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use crate::compositor::CompositorControl;
 use crate::gst_host::{Codec, GstHost};
@@ -144,14 +146,16 @@ impl MainPlane {
     }
 
     pub fn dispose(&self) {
-        let started = {
+        let (started, claiming) = {
             let mut st = self.state();
-            st.claiming = false;
+            let claiming = std::mem::take(&mut st.claiming);
             st.generation += 1;
             st.codec = None;
-            std::mem::take(&mut st.started)
+            (std::mem::take(&mut st.started), claiming)
         };
-        self.comp.release(TAG);
+        if started || claiming {
+            self.comp.release(TAG);
+        }
         if started {
             self.gst.stop(PLANE_MAIN);
         }
@@ -162,7 +166,12 @@ pub struct VideoPlane {
     gst: GstHost,
     comp: CompositorControl,
     stops: AtomicU64,
-    shown: AtomicBool,
+    visibility: Mutex<VideoVisibility>,
+}
+
+struct VideoVisibility {
+    allowed: bool,
+    presented: bool,
 }
 
 impl VideoPlane {
@@ -171,7 +180,10 @@ impl VideoPlane {
             gst,
             comp,
             stops: AtomicU64::new(0),
-            shown: AtomicBool::new(true),
+            visibility: Mutex::new(VideoVisibility {
+                allowed: true,
+                presented: false,
+            }),
         })
     }
 
@@ -185,12 +197,12 @@ impl VideoPlane {
         }
         self.comp
             .videocfg(VIDEO_TAG, SCREEN, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-        self.comp
-            .videoshow(VIDEO_TAG, self.shown.load(Ordering::SeqCst));
+        self.update_visibility(|_| {});
         self.comp.claim(VIDEO_TAG).await;
         if self.turn() != turn {
             return false;
         }
+        self.update_visibility(|_| {});
         self.gst.play_url(PLANE_VIDEO, url, audio_device);
         true
     }
@@ -208,8 +220,22 @@ impl VideoPlane {
     }
 
     pub fn set_shown(&self, shown: bool) {
-        self.shown.store(shown, Ordering::SeqCst);
-        self.comp.videoshow(VIDEO_TAG, shown);
+        self.update_visibility(|visibility| visibility.allowed = shown);
+    }
+
+    /// Playback may continue behind native menus, but its picture belongs only
+    /// to full-screen projection, never to a transparent navigation tile.
+    pub fn set_presented(&self, presented: bool) {
+        self.update_visibility(|visibility| visibility.presented = presented);
+    }
+
+    fn update_visibility(&self, update: impl FnOnce(&mut VideoVisibility)) {
+        let mut visibility = self.visibility.lock().unwrap_or_else(|e| e.into_inner());
+        update(&mut visibility);
+        // Serialize both the state change and its command: an allowance update
+        // racing with Home must not enqueue a stale visible=true afterward.
+        self.comp
+            .videoshow(VIDEO_TAG, visibility.allowed && visibility.presented);
     }
 
     pub fn stop(&self) {
@@ -285,6 +311,7 @@ struct ClusterState {
     codec: Option<Codec>,
     codec_data: Vec<u8>,
     crop: Option<Crop>,
+    main_viewport: Option<VideoRect>,
     slots: [Slot; 3],
 }
 
@@ -312,6 +339,23 @@ impl ClusterPlanes {
 
     pub fn player_created(&self) -> broadcast::Receiver<()> {
         self.created.subscribe()
+    }
+
+    pub fn video_ready(&self) -> watch::Receiver<HashSet<String>> {
+        self.comp.video_ready()
+    }
+
+    /// Place the map copy on the main UI without changing its source crop.
+    pub fn set_main_viewport(&self, viewport: Option<VideoRect>) -> bool {
+        let viewport = viewport.filter(|rect| rect.valid());
+        let mut st = self.state();
+        if st.main_viewport == viewport {
+            return false;
+        }
+        st.main_viewport = viewport;
+        self.comp
+            .videobox(&cluster_tag(0), CLUSTER_SCREENS[0], viewport);
+        true
     }
 
     pub fn prepare(self: &Arc<Self>, codec: Codec, atom: Vec<u8>) {
@@ -375,6 +419,12 @@ impl ClusterPlanes {
         let planes = self.clone();
         tokio::spawn(async move {
             let tag = cluster_tag(i);
+            if i == 0 {
+                let st = planes.state();
+                planes
+                    .comp
+                    .videobox(&tag, CLUSTER_SCREENS[i], st.main_viewport);
+            }
             planes.comp.claim(&tag).await;
             let (codec, data, crop) = {
                 let mut st = planes.state();
@@ -395,15 +445,17 @@ impl ClusterPlanes {
     }
 
     fn stop(&self, i: usize) {
-        let started = {
+        let (started, claiming) = {
             let mut st = self.state();
             let slot = &mut st.slots[i];
-            slot.claiming = false;
+            let claiming = std::mem::take(&mut slot.claiming);
             slot.generation += 1;
-            std::mem::take(&mut slot.started)
+            (std::mem::take(&mut slot.started), claiming)
         };
         let tag = cluster_tag(i);
-        self.comp.release(&tag);
+        if started || claiming {
+            self.comp.release(&tag);
+        }
         if started {
             self.comp.videoshow(&tag, false);
             self.gst.stop(cluster_plane(i));
@@ -436,7 +488,7 @@ impl ClusterPlanes {
 mod tests {
     use std::time::Duration;
 
-    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     use tokio::net::{UnixListener, UnixStream};
 
     use super::*;
@@ -528,7 +580,9 @@ mod tests {
         assert!(created.try_recv().is_err());
     }
 
-    async fn next_line(lines: &mut tokio::io::Lines<BufReader<UnixStream>>) -> String {
+    async fn next_line<R: tokio::io::AsyncRead + Unpin>(
+        lines: &mut tokio::io::Lines<BufReader<R>>,
+    ) -> String {
         tokio::time::timeout(Duration::from_secs(5), lines.next_line())
             .await
             .unwrap()
@@ -593,11 +647,139 @@ mod tests {
         while !after.contains(&"videoshow cluster-cluster 0".to_string()) {
             after.push(next_line(&mut lines).await);
         }
-        assert!(after.contains(&"unclaim cluster-cluster".to_string()));
+        assert!(after.contains(&"unclaim cluster-cluster 1".to_string()));
         let msg = next_msg(&mut host, &mut framer).await;
         assert_eq!(msg.id, CLUSTER_PLANE_MIN + 1);
         assert_ne!(msg.op, 1);
         assert!(created.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn the_main_map_viewport_survives_source_crop_changes_and_player_restarts() {
+        let dir = TempDir::new();
+        let comp_listener = UnixListener::bind(dir.0.join("ctrl")).unwrap();
+        let gst = GstHost::new(dir.0.join("gst.sock"));
+        let planes = ClusterPlanes::new(gst, CompositorControl::connect(dir.0.join("ctrl")));
+        let mut created = planes.player_created();
+        let viewport = VideoRect {
+            x: 0.6,
+            y: 0.2,
+            width: 0.3,
+            height: 0.5,
+        };
+        planes.set_main_viewport(Some(viewport));
+        planes.show_on([true, false, false]);
+        let crop = crop_for((1280, 720), (800, 600));
+        planes.set_crop(crop);
+        planes.prepare(Codec::H264, vec![7]);
+        tokio::time::timeout(Duration::from_secs(5), created.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let (ctrl, _) = comp_listener.accept().await.unwrap();
+        let mut lines = BufReader::new(ctrl).lines();
+        let mut seen = Vec::new();
+        while !seen.contains(&"videoshow cluster-main 1".to_string()) {
+            seen.push(next_line(&mut lines).await);
+        }
+        assert!(seen.contains(&"videobox cluster-main main 0.6 0.2 0.3 0.5 2".to_string()));
+        assert!(seen.contains(&"videocfg cluster-main main 160 0 960 720 1280 720".to_string()));
+
+        planes.set_crop(None);
+        while next_line(&mut lines).await != "videocfg cluster-main main 0 0 0 0 0 0" {}
+        assert_eq!(planes.state().main_viewport, Some(viewport));
+        planes.dispose();
+        assert_eq!(planes.state().main_viewport, Some(viewport));
+        planes.prepare(Codec::H265, vec![8]);
+        tokio::time::timeout(Duration::from_secs(5), created.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        while next_line(&mut lines).await != "videoshow cluster-main 0" {}
+        let mut restarted = Vec::new();
+        while !restarted.contains(&"videoshow cluster-main 1".to_string()) {
+            restarted.push(next_line(&mut lines).await);
+        }
+        assert!(restarted.contains(&"videobox cluster-main main 0.6 0.2 0.3 0.5 4".to_string()));
+        assert_eq!(planes.state().crop, None);
+
+        planes.set_main_viewport(None);
+        while next_line(&mut lines).await != "videobox cluster-main main - 5" {}
+        assert_eq!(planes.state().crop, None);
+    }
+
+    #[tokio::test]
+    async fn changing_the_map_viewport_invalidates_old_frames_but_duplicate_placement_does_not() {
+        let dir = TempDir::new();
+        let listener = UnixListener::bind(dir.0.join("ctrl")).unwrap();
+        let comp = CompositorControl::connect(dir.0.join("ctrl"));
+        let planes = ClusterPlanes::new(GstHost::new(dir.0.join("gst.sock")), comp.clone());
+        let mut ready = planes.video_ready();
+        let (ctrl, _) = listener.accept().await.unwrap();
+        let (rd, mut wr) = ctrl.into_split();
+        let mut lines = BufReader::new(rd).lines();
+        wr.write_all(b"videoready cluster-main 1\n").await.unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            ready.wait_for(|tags| tags.contains("cluster-main")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let viewport = VideoRect {
+            x: 0.6,
+            y: 0.2,
+            width: 0.3,
+            height: 0.5,
+        };
+        assert!(planes.set_main_viewport(Some(viewport)));
+        assert!(
+            !ready.borrow().contains("cluster-main"),
+            "a new box immediately invalidates the old frame"
+        );
+        assert_eq!(
+            next_line(&mut lines).await,
+            "videobox cluster-main main 0.6 0.2 0.3 0.5 1"
+        );
+        wr.write_all(b"videoready cluster-main 1\nvideoready cluster-aux 1\n")
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            ready.wait_for(|tags| tags.contains("cluster-aux")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            !ready.borrow().contains("cluster-main"),
+            "an old queued frame is suppressed until the box acknowledgement"
+        );
+        wr.write_all(b"videoready cluster-main 1 0\nvideoready cluster-main 1 1\n")
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            ready.wait_for(|tags| tags.contains("cluster-main")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(!planes.set_main_viewport(Some(viewport)));
+        assert!(
+            ready.borrow().contains("cluster-main"),
+            "duplicate service placement preserves the fresh frame"
+        );
+        comp.backdrop("#000000");
+        assert_eq!(
+            next_line(&mut lines).await,
+            "videobox cluster-main main 0.6 0.2 0.3 0.5 1"
+        );
+        assert_eq!(next_line(&mut lines).await, "backdrop 0 0 0");
+        assert!(planes.set_main_viewport(None));
+        assert!(!ready.borrow().contains("cluster-main"));
     }
 
     #[tokio::test]
@@ -606,6 +788,7 @@ mod tests {
         let comp_listener = UnixListener::bind(dir.0.join("ctrl")).unwrap();
         let gst = GstHost::new(dir.0.join("gst.sock"));
         let plane = VideoPlane::new(gst.clone(), CompositorControl::connect(dir.0.join("ctrl")));
+        plane.set_presented(true);
 
         assert!(
             plane
@@ -618,7 +801,14 @@ mod tests {
             .unwrap();
         let mut lines = BufReader::new(ctrl).lines();
         let mut seen = Vec::new();
-        for _ in 0..3 {
+        while ![
+            "claim video",
+            "videocfg video main 0 0 0 0 0 0",
+            "videoshow video 1",
+        ]
+        .iter()
+        .all(|line| seen.iter().any(|seen| seen == line))
+        {
             seen.push(next_line(&mut lines).await);
         }
         assert!(seen.contains(&"videocfg video main 0 0 0 0 0 0".to_string()));
@@ -679,6 +869,7 @@ mod tests {
             .unwrap();
         let mut lines = BufReader::new(ctrl).lines();
         plane.set_shown(false);
+        plane.set_presented(true);
         assert!(
             plane
                 .play(plane.turn(), "http://127.0.0.1:9/i.m3u8", "")
@@ -698,5 +889,111 @@ mod tests {
         assert_eq!(*last, "videoshow video 1");
         assert!(!before.is_empty() && before.iter().all(|l| *l == "videoshow video 0"));
         assert!(seen.contains(&"claim video".to_string()));
+    }
+
+    #[tokio::test]
+    async fn native_home_hides_video_without_stopping_playback_or_changing_its_allowance() {
+        let dir = TempDir::new();
+        let listener = UnixListener::bind(dir.0.join("ctrl")).unwrap();
+        let gst = GstHost::new(dir.0.join("gst.sock"));
+        let plane = VideoPlane::new(gst.clone(), CompositorControl::connect(dir.0.join("ctrl")));
+        let (ctrl, _) = listener.accept().await.unwrap();
+        let mut lines = BufReader::new(ctrl).lines();
+
+        // A play can start before the first service state update. Default to
+        // hidden, and keep it hidden when parked-video allowance changes.
+        assert!(
+            plane
+                .play(plane.turn(), "http://127.0.0.1:9/i.m3u8", "car")
+                .await
+        );
+        plane.set_shown(false);
+        plane.set_shown(true);
+        plane.set_presented(false);
+        let mut seen = Vec::new();
+        while !seen.contains(&"claim video".to_string()) {
+            seen.push(next_line(&mut lines).await);
+        }
+        assert!(seen.contains(&"videoshow video 0".to_string()));
+        assert!(!seen.contains(&"videoshow video 1".to_string()));
+        while next_line(&mut lines).await != "videoshow video 0" {}
+
+        let mut host = UnixStream::connect(dir.0.join("gst.sock")).await.unwrap();
+        let mut framer = livi_host_proto::Framer::new();
+        let play = next_msg(&mut host, &mut framer).await;
+        assert_eq!((play.op, play.id), (22, PLANE_VIDEO));
+
+        // Full-screen projection shows the same running URL. Returning Home
+        // only hides its picture; audio/player state and the map stay separate.
+        plane.set_presented(true);
+        while next_line(&mut lines).await != "videoshow video 1" {}
+        plane.set_presented(false);
+        while next_line(&mut lines).await != "videoshow video 0" {}
+        plane.set_shown(false);
+        while next_line(&mut lines).await != "videoshow video 0" {}
+        plane.set_presented(true);
+        while next_line(&mut lines).await != "videoshow video 0" {}
+        plane.set_shown(true);
+        while next_line(&mut lines).await != "videoshow video 1" {}
+        plane.set_rate(0.0);
+        let rate = next_msg(&mut host, &mut framer).await;
+        assert_eq!(
+            (rate.op, rate.id),
+            (23, PLANE_VIDEO),
+            "no stop/restart behind visibility changes"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_play_waiting_for_its_claim_cannot_restore_old_fullscreen_visibility() {
+        let dir = TempDir::new();
+        let listener = UnixListener::bind(dir.0.join("ctrl")).unwrap();
+        let comp = CompositorControl::connect(dir.0.join("ctrl"));
+        let gst = GstHost::new(dir.0.join("gst.sock"));
+        let plane = VideoPlane::new(gst, comp.clone());
+        let (ctrl, _) = listener.accept().await.unwrap();
+        let (rd, mut wr) = ctrl.into_split();
+        let mut lines = BufReader::new(rd).lines();
+
+        // Hold an unrelated in-flight window claim so playback really yields
+        // while Home takes over, then allow the delayed video claim to finish.
+        comp.claim("main").await;
+        assert_eq!(next_line(&mut lines).await, "claim main");
+        plane.set_presented(true);
+        let playing = plane.clone();
+        let play = tokio::spawn(async move {
+            playing
+                .play(playing.turn(), "http://127.0.0.1:9/i.m3u8", "")
+                .await
+        });
+        while next_line(&mut lines).await != "videocfg video main 0 0 0 0 0 0" {}
+        while next_line(&mut lines).await != "videoshow video 1" {}
+        assert!(!play.is_finished());
+        plane.set_presented(false);
+        while next_line(&mut lines).await != "videoshow video 0" {}
+        wr.write_all(b"bound main\n").await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), play)
+                .await
+                .unwrap()
+                .unwrap()
+        );
+        plane.set_shown(false);
+        plane.set_shown(true);
+        comp.videoshow("test-barrier", true);
+        let mut seen = Vec::new();
+        loop {
+            let line = next_line(&mut lines).await;
+            if line == "videoshow test-barrier 1" {
+                break;
+            }
+            seen.push(line);
+        }
+        assert!(seen.contains(&"claim video".to_string()));
+        assert!(seen.contains(&"videoshow video 0".to_string()));
+        assert!(
+            !seen.contains(&"videoshow video 1".to_string()),
+            "late claim/reopen and allowance changes cannot reveal playback in Home"
+        );
     }
 }

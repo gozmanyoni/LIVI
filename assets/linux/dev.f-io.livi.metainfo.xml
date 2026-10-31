@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
   <id>dev.f-io.livi</id>
-  <name>LIVI</name>
-  <summary>LIVI - Linux In-Vehicle Infotainment</summary>
+  <name>OpenNBT</name>
+  <summary>BMW E90 infotainment with native phone projection</summary>
   <description>
     <p>
-      LIVI is an open-source native Apple CarPlay and Android Auto head unit for Linux.
+      OpenNBT is an independent BMW E90-focused infotainment interface based on LIVI.
+      It provides native Apple CarPlay and Android Auto connectivity on Linux.
       It supports hardware-accelerated video decoding, low-latency audio, multitouch
       and D-Pad navigation.
     </p>
@@ -15,8 +16,8 @@
   <developer id="dev.f-io">
     <name>Lasse Heitgres</name>
   </developer>
-  <url type="homepage">https://f-io.github.io/LIVI/</url>
-  <url type="bugtracker">https://github.com/f-io/LIVI/issues</url>
+  <url type="homepage">https://github.com/gozmanyoni/LIVI</url>
+  <url type="bugtracker">https://github.com/gozmanyoni/LIVI/issues</url>
   <launchable type="desktop-id">dev.f-io.livi.desktop</launchable>
   <categories>
     <category>Utility</category>

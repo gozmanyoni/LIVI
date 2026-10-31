@@ -33,12 +33,7 @@ impl Projection {
         if !camera && asked.main != last.main && asked.main != Front::Projection {
             self.attention = None;
         }
-        let cluster_on = shows_cluster(&self.wants);
-        if cluster_on != self.cluster_on {
-            self.cluster_on = cluster_on;
-            self.cp.send(CpCmd::ClusterActive(cluster_on));
-            self.aa.send(AaCmd::ClusterActive(cluster_on));
-        }
+        self.reconcile_cluster_demand();
         if self.wants.main == Front::Projection && before != Front::Projection {
             if self.attention.is_none() {
                 self.to_active(Do::Home);
@@ -101,6 +96,18 @@ impl Projection {
             self.wants.main = Front::Livi;
         }
         self.publish();
+    }
+
+    pub(super) fn open_navigation(&mut self) {
+        // UI commands and the wants watch are independent channels. Record the
+        // same intent in both places so a delayed watch update cannot send Home
+        // after the maps request and replace the requested navigation screen.
+        self.attention = None;
+        self.wants.main = Front::Projection;
+        self.asked.main = Front::Projection;
+        self.publish();
+        self.keyframe();
+        self.open_app("maps:");
     }
 
     pub(super) fn keyframe(&self) {

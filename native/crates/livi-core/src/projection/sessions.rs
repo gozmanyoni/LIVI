@@ -186,6 +186,10 @@ impl Projection {
     pub(super) fn changed(&mut self) {
         let owner = self.active().map(|s| s.link);
         if owner != self.video_owner {
+            // A decoded map belongs to its phone. Never expose the previous
+            // phone's retained frame while a replacement session starts.
+            self.map_preview_ready = false;
+            self.clusters.dispose();
             if let Some(old) = self.video_owner {
                 self.tell(old, Do::VideoActive(false));
             }
@@ -300,6 +304,15 @@ impl Projection {
     }
 
     pub(super) fn publish(&mut self) {
+        self.reconcile_cluster_demand();
+        let mut map_preview = self.effective_map_preview();
+        if self.clusters.set_main_viewport(map_preview.viewport) {
+            let had_ready = std::mem::take(&mut self.map_preview_ready);
+            map_preview.ready = false;
+            if had_ready && map_preview.viewport.is_some() {
+                self.keyframe();
+            }
+        }
         let list = devices::views(&self.devices.registry, &|ids| self.session_of(ids));
         let targets = self.targets();
         self.devices.page(targets, false);
@@ -328,6 +341,7 @@ impl Projection {
             s.navigation = navigation;
             s.devices = list;
             s.cluster = self.cluster.clone();
+            s.map_preview = map_preview;
         });
     }
 }

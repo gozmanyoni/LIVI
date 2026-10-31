@@ -604,6 +604,7 @@ mod tests {
         config.projection_height = 600;
         config.voice_assistant_volume = 0.5;
         State {
+            map_preview: Default::default(),
             front: PerScreen {
                 main: Front::Livi,
                 cluster: Front::Livi,

@@ -5,7 +5,7 @@
 import { Theme, Ui } from "theme.slint";
 import { Focus } from "focus.slint";
 
-export enum Page { projection, telemetry, media, camera, settings }
+export enum Page { home, projection, telemetry, media, camera, settings }
 
 export enum PhoneState { none, connected, streaming }
 
@@ -31,6 +31,13 @@ component Tab inherits Rectangle {
     min-height: Ui.icon-size;
     preferred-height: Ui.icon-size + (Ui.xs-icons ? 10px : 20px);
 
+    background: root.active ? Theme.primary.with-alpha(0.14) : transparent;
+    Rectangle {
+        x: 0;
+        width: 3px;
+        background: root.active || root.focused ? Theme.primary : transparent;
+    }
+
     Image {
         width: Ui.icon-size;
         height: Ui.icon-size;
@@ -49,28 +56,16 @@ export component Nav inherits Rectangle {
     in property <[TabData]> tabs;
     in property <Page> active;
     in property <PhoneState> phone;
-    in property <string> clock;
     in property <bool> right-hand;
     in property <bool> asleep;
     callback select(Page);
 
-    width: Ui.xs-icons ? Ui.nav-width : max(Ui.icon-size, Ui.show-clock ? clock-text.preferred-width : 0) + 2 * Ui.nav-pad + 1px;
+    width: Ui.nav-width;
     background: Theme.background;
     opacity: root.asleep ? 0 : 1;
     animate opacity { duration: 220ms; easing: ease; }
 
     VerticalLayout {
-        Rectangle {
-            visible: Ui.show-clock;
-            height: Ui.show-clock ? clock-text.preferred-height + 16px : 0;
-            clock-text := Text {
-                x: (parent.width - self.width) / 2;
-                y: 16px;
-                text: root.clock;
-                color: Theme.text;
-                font-size: Ui.xs-icons ? 16px : 24px;
-            }
-        }
         for tab[i] in root.tabs: Tab {
             page: tab.page;
             icon: tab.icon;

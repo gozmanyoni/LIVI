@@ -22,7 +22,9 @@ component OptionRow inherits RowFrame {
         width: clamp(Metrics.row-h * 0.25, 8px, 12px);
         height: self.width;
         border-radius: self.width / 2;
-        background: root.selected ? Theme.primary : transparent;
+        border-width: 1px;
+        border-color: root.highlighted ? #ffffff : Theme.text-secondary;
+        background: root.selected ? (root.highlighted ? #ffffff : Theme.text) : transparent;
     }
 }
 
@@ -51,13 +53,13 @@ component StepButton inherits Rectangle {
     property <int> repeats;
 
     width: 72px;
-    background: touch.pressed ? Theme.button-active : Theme.button;
+    background: touch.pressed || root.focused ? Theme.selection : Theme.panel;
     opacity: root.enabled ? 1 : 0.4;
     border-width: root.focused ? 2px : 0;
     border-color: Theme.primary;
     Text {
         text: root.glyph;
-        color: Theme.text;
+        color: touch.pressed || root.focused ? #ffffff : Theme.text;
         font-size: 28px;
     }
     touch := TouchArea {
@@ -124,7 +126,7 @@ export component NumberBody inherits VerticalLayout {
     alignment: start;
     Rectangle {
         height: 88px;
-        border-radius: 8px;
+        border-radius: 0px;
         border-width: root.editing ? 3px : root.focused ? 2px : 1px;
         border-color: root.focused ? Theme.primary : Theme.divider;
         clip: true;
@@ -184,7 +186,7 @@ export component TextBody inherits VerticalLayout {
     alignment: start;
     Rectangle {
         height: 56px;
-        border-radius: 8px;
+        border-radius: 0px;
         border-width: input.has-focus || root.focused ? 2px : 1px;
         border-color: input.has-focus || root.focused ? Theme.primary : Theme.divider;
         input := TextInput {
@@ -313,7 +315,7 @@ export component ColorBody inherits VerticalLayout {
         Rectangle {
             width: 56px;
             height: 40px;
-            border-radius: 8px;
+            border-radius: 0px;
             border-width: 1px;
             border-color: #80808080;
             background: root.preview;
@@ -321,7 +323,7 @@ export component ColorBody inherits VerticalLayout {
         Rectangle {
             horizontal-stretch: 1;
             height: 40px;
-            border-radius: 8px;
+            border-radius: 0px;
             border-width: root.hex-bad || hex-input.has-focus || Focus.main(root.base) ? 2px : 1px;
             border-color: root.hex-bad ? #f44336 : hex-input.has-focus || Focus.main(root.base) ? Theme.primary : Theme.divider;
             hex-input := TextInput {
@@ -341,7 +343,7 @@ export component ColorBody inherits VerticalLayout {
         }
         Rectangle {
             width: 40px;
-            border-radius: 6px;
+            border-radius: 0px;
             border-width: Focus.main(root.base + 1) ? 2px : 0;
             border-color: Theme.primary;
             opacity: root.custom ? 1 : 0.4;

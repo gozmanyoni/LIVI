@@ -107,6 +107,10 @@ impl Client {
         self.send(&ToCore::Path { path: path.into() });
     }
 
+    pub fn map_preview(&self, viewport: Option<livi_core_proto::state::VideoRect>) {
+        self.send(&ToCore::MapPreview { viewport });
+    }
+
     pub fn show(&self, screen: Screen, front: Front) {
         self.act(Action::Show { screen, front });
     }

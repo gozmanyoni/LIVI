@@ -393,6 +393,7 @@ mod tests {
 
     fn state(config: Config, telemetry: Snapshot) -> State {
         State {
+            map_preview: Default::default(),
             front: PerScreen {
                 main: Front::Livi,
                 cluster: Front::Livi,

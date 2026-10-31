@@ -32,9 +32,32 @@ pub const BTN_W: i32 = 32;
 pub const BTN_GAP: i32 = 2;
 pub const RESIZE_BORDER: i32 = 8;
 
+/// Destination in normalized UI content coordinates, excluding server decorations.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VideoBox {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+impl VideoBox {
+    pub fn new(x: f64, y: f64, w: f64, h: f64) -> Option<Self> {
+        ([x, y, w, h].into_iter().all(f64::is_finite)
+            && x >= 0.0
+            && y >= 0.0
+            && w > 0.0
+            && h > 0.0
+            && x + w <= 1.0
+            && y + h <= 1.0)
+            .then_some(Self { x, y, w, h })
+    }
+}
+
 #[derive(Default, Clone)]
 pub struct VideoCfg {
     pub tag: String,
+    pub generation: u64,
     pub screen: String,
     pub has_crop: bool,
     pub crop_l: f64,
@@ -43,8 +66,29 @@ pub struct VideoCfg {
     pub vis_h: f64,
     pub tier_w: f64,
     pub tier_h: f64,
+    pub destination: Option<VideoBox>,
+    pub destination_screen: String,
     pub has_visible: bool,
     pub visible: bool,
+}
+
+impl VideoCfg {
+    pub fn accept_generation(&mut self, generation: u64) -> Option<bool> {
+        if generation < self.generation {
+            return None;
+        }
+        let changed = generation > self.generation;
+        self.generation = generation;
+        Some(changed)
+    }
+
+    pub fn set_destination(&mut self, screen: &str, destination: Option<VideoBox>) -> bool {
+        let changed = self.destination != destination
+            || (destination.is_some() && self.destination_screen != screen);
+        self.destination = destination;
+        self.destination_screen = screen.to_string();
+        changed
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -53,6 +97,74 @@ pub enum Kind {
     Ui,
     Video,
     Dialog,
+}
+
+/// A released surface never belongs to a later claimant of the same tag.
+#[derive(Default)]
+pub struct VideoStatus {
+    pub ready: bool,
+    pub retired: bool,
+    pub generation: u64,
+    pub expected_size: Option<(i32, i32)>,
+}
+
+impl VideoStatus {
+    /// Only a still-queued claim may follow layout revisions before its window arrives.
+    /// The caller retains the original claim token for the `bound` acknowledgment.
+    pub fn bind_pending_generation(&mut self, claim: u64, latest: u64) -> bool {
+        self.bind_generation(claim.max(latest), latest)
+    }
+
+    pub fn bind_generation(&mut self, generation: u64, latest: u64) -> bool {
+        if self.retired {
+            return false;
+        }
+        self.generation = generation;
+        self.invalidate_placement();
+        if generation < latest {
+            self.retire();
+            return false;
+        }
+        true
+    }
+
+    pub fn advance_generation(&mut self, generation: u64) -> bool {
+        if self.retired || generation < self.generation {
+            return false;
+        }
+        if generation != self.generation {
+            self.invalidate_placement();
+            self.generation = generation;
+        }
+        true
+    }
+
+    pub fn readiness_line(&self, tag: &str, ready: bool) -> String {
+        format!("videoready {tag} {} {}\n", self.generation, u8::from(ready))
+    }
+
+    pub fn invalidate_placement(&mut self) {
+        self.ready = false;
+    }
+
+    pub fn buffer_committed(&mut self, mapped: bool, size: (i32, i32)) -> Option<bool> {
+        self.committed(mapped && self.expected_size == Some(size))
+    }
+
+    pub fn committed(&mut self, ready: bool) -> Option<bool> {
+        if self.retired || self.ready == ready {
+            return None;
+        }
+        self.ready = ready;
+        Some(ready)
+    }
+
+    pub fn retire(&mut self) -> bool {
+        let changed = !self.retired;
+        self.retired = true;
+        self.ready = false;
+        changed
+    }
 }
 
 pub struct TopLevel {
@@ -69,6 +181,8 @@ pub struct TopLevel {
     pub vis_h: f64,
     pub tier_w: f64,
     pub tier_h: f64,
+    pub destination: Option<VideoBox>,
+    pub video_status: VideoStatus,
     pub position: Point<i32, Logical>,
     pub clear: bool,
 }
@@ -127,7 +241,7 @@ pub struct LiviState {
     pub screens: Vec<Screen>,
     pub toplevels: Vec<TopLevel>,
     pub video_order: Vec<usize>,
-    pub pending_video_tags: VecDeque<String>,
+    pub pending_video_tags: VecDeque<(String, u64)>,
     pub video_cfgs: Vec<VideoCfg>,
 
     pub cal: CalState,
@@ -299,7 +413,7 @@ impl LiviState {
     pub fn find_video_by_tag(&self, tag: &str) -> Option<usize> {
         self.toplevels
             .iter()
-            .position(|t| t.kind == Kind::Video && t.tag == tag)
+            .position(|t| t.kind == Kind::Video && t.tag == tag && !t.video_status.retired)
     }
 
     pub fn after_dispatch(&mut self) {
@@ -321,5 +435,146 @@ pub fn role_title(role: &str) -> &str {
         "cluster" => "Cluster",
         "aux" => "Auxiliary",
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn released_surface_cannot_restore_ready_or_invalidate_its_replacement() {
+        let mut old = VideoStatus::default();
+        assert_eq!(old.committed(true), Some(true));
+        assert!(old.retire());
+        assert!(!old.ready);
+        assert_eq!(
+            old.committed(true),
+            None,
+            "late old-phone frames stay retired"
+        );
+        assert!(
+            !old.retire(),
+            "old destruction cannot clear a replacement's readiness"
+        );
+
+        let mut replacement = VideoStatus::default();
+        assert!(!replacement.ready);
+        assert_eq!(replacement.committed(true), Some(true));
+        assert_eq!(old.committed(false), None);
+        assert!(replacement.ready);
+        assert!(!replacement.retired);
+    }
+
+    #[test]
+    fn box_changes_wait_for_matching_new_buffers_and_identical_replay_stays_ready() {
+        let mut cfg = VideoCfg::default();
+        let mut video = VideoStatus {
+            expected_size: Some((1600, 600)),
+            ..Default::default()
+        };
+        assert_eq!(video.buffer_committed(true, (1600, 600)), Some(true));
+
+        let tile = VideoBox::new(0.5, 0.2, 0.25, 0.5);
+        assert!(cfg.set_destination("main", tile));
+        video.invalidate_placement();
+        video.expected_size = Some((400, 300));
+        assert!(!video.ready);
+        assert_eq!(
+            video.buffer_committed(true, (1600, 600)),
+            None,
+            "old full-screen buffers stay covered"
+        );
+        assert_eq!(video.buffer_committed(true, (400, 300)), Some(true));
+
+        if cfg.set_destination("main", tile) {
+            video.invalidate_placement();
+        }
+        assert!(video.ready, "identical replay must not flicker");
+        assert!(
+            cfg.set_destination("cluster", tile),
+            "moving to another output changes placement"
+        );
+        assert!(
+            cfg.set_destination("main", None),
+            "clearing restores the full-screen destination"
+        );
+        video.invalidate_placement();
+        video.expected_size = Some((1600, 600));
+        assert_eq!(video.buffer_committed(true, (400, 300)), None);
+        assert_eq!(video.buffer_committed(true, (1600, 600)), Some(true));
+        assert!(
+            !cfg.set_destination("cluster", None),
+            "an already cleared box has no destination output"
+        );
+    }
+
+    #[test]
+    fn rapid_viewport_revisions_keep_old_acknowledgments_and_pending_claims_on_their_own_token() {
+        let mut cfg = VideoCfg::default();
+        let mut video = VideoStatus::default();
+        assert_eq!(cfg.accept_generation(1), Some(true));
+        assert!(video.bind_generation(1, cfg.generation));
+        let a0 = video.readiness_line("cluster-main", false);
+        let a1 = video.readiness_line("cluster-main", true);
+
+        assert_eq!(cfg.accept_generation(2), Some(true));
+        assert!(video.advance_generation(2));
+        assert!(!video.ready);
+        assert_eq!(
+            video.readiness_line("cluster-main", false),
+            "videoready cluster-main 2 0\n"
+        );
+        assert_eq!(a0, "videoready cluster-main 1 0\n");
+        assert_eq!(
+            a1, "videoready cluster-main 1 1\n",
+            "delayed A events cannot acknowledge B"
+        );
+        assert_eq!(
+            cfg.accept_generation(1),
+            None,
+            "stale commands cannot roll back B"
+        );
+        assert_eq!(
+            cfg.accept_generation(2),
+            Some(false),
+            "identical token replay needs no reset"
+        );
+
+        let mut cancelled = VideoStatus::default();
+        assert!(cancelled.bind_generation(1, 1));
+        cancelled.retire();
+        assert!(!cancelled.bind_pending_generation(1, cfg.generation));
+        assert!(
+            !cancelled.advance_generation(2),
+            "retired surfaces cannot be revived"
+        );
+        assert_eq!(cancelled.generation, 1);
+        assert_eq!(cancelled.committed(true), None);
+    }
+
+    #[test]
+    fn active_pending_claim_survives_a_viewport_revision_without_losing_its_acknowledgment() {
+        let claim_generation = 1;
+        let latest_layout = 2;
+        let mut pending = VecDeque::from([(String::from("cluster-main"), claim_generation)]);
+        let (tag, original) = pending.pop_front().unwrap();
+        let mut video = VideoStatus::default();
+        assert!(video.bind_pending_generation(original, latest_layout));
+        assert_eq!(
+            format!("bound {tag} {original}\n"),
+            "bound cluster-main 1\n"
+        );
+        assert_eq!(
+            video.readiness_line(&tag, false),
+            "videoready cluster-main 2 0\n"
+        );
+        video.expected_size = Some((400, 300));
+        assert_eq!(video.buffer_committed(true, (400, 300)), Some(true));
+        assert_eq!(
+            video.readiness_line(&tag, true),
+            "videoready cluster-main 2 1\n"
+        );
+        assert!(!video.retired);
     }
 }

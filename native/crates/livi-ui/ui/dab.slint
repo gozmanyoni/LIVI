@@ -184,16 +184,17 @@ export component DabPage inherits Rectangle {
     property <float> page-pad: round(clampf(min-side * 0.02, 12, 22));
     property <float> col-gap: round(clampf(w * 0.025, 16, 28));
     property <float> section-gap: round(clampf(h * 0.03, 10, 24));
-    property <float> ctrl-size: min(round(clampf(h * 0.095, 50, 82)), floor((w - page-pad * 2 - 8 - ctrl-gap * 3) / 4));
+    property <float> ctrl-size: min(round(clampf(h * 0.25, 56, 96)), floor((w - page-pad * 2 - 8 - ctrl-gap * 3) / 4.125));
+    property <float> play-size: round(ctrl-size * 1.125);
     property <float> ctrl-gap: round(clampf(w * 0.03, 16, 32));
     property <float> title-px: round(clampf(min-side * 0.07, 18, 48));
     property <float> artist-px: round(clampf(min-side * 0.034, 14, 24));
     property <float> album-px: round(clampf(min-side * 0.028, 13, 20));
     property <float> tile: round(clampf(h * 0.26, 88, 140));
-    property <float> art-px: max(0, round(min(h - tile - page-pad * 3 - 16, w * 0.38)));
-    property <length> icon-px: round(ctrl-size * 0.46) * 1px;
+    property <float> art-px: max(0, round(min(h - tile - page-pad * 3 - 16, w * 0.32)));
+    property <length> icon-px: round(ctrl-size * 0.50) * 1px;
     property <bool> compact: h > 0 && h < 300;
-    property <bool> art-shown: !compact && art-px >= 48;
+    property <bool> art-shown: !compact && art-px >= 48 && w - art-px - col-gap - page-pad * 2 >= ctrl-size * 4.125 + ctrl-gap * 3 + 8;
 
     in-out property <bool> show-spectrum;
     in property <[float]> bands;
@@ -282,8 +283,8 @@ export component DabPage inherits Rectangle {
                     RoundButton {
                         focused: Focus.main(root.off + 1);
                         flash: Press.play;
-                        size: root.ctrl-size * 1px;
-                        icon-size: root.icon-px;
+                        size: root.play-size * 1px;
+                        icon-size: round(root.play-size * 0.50) * 1px;
                         icon: DabState.playing ? @image-url("icons/Pause.svg") : @image-url("icons/PlayArrow.svg");
                         clicked => { root.play-pause(); }
                     }
@@ -302,7 +303,7 @@ export component DabPage inherits Rectangle {
                         size: root.ctrl-size * 1px;
                         icon-size: root.icon-px;
                         icon: DabState.favorite ? @image-url("icons/StarRounded.svg") : @image-url("icons/StarBorderRounded.svg");
-                        icon-color: DabState.favorite ? #ffa726 : Theme.text;
+                        icon-color: DabState.favorite ? #ffa726 : #f3f3f3;
                         clicked => { DabState.toggle-favorite(); }
                     }
                 }

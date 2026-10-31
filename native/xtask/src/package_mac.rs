@@ -129,8 +129,8 @@ pub fn run(arch: Arch) -> Result<(), String> {
         contents.join("Info.plist"),
         plist(&[
             ("CFBundleIdentifier", BUNDLE_ID),
-            ("CFBundleName", "LIVI"),
-            ("CFBundleDisplayName", "LIVI"),
+            ("CFBundleName", "OpenNBT"),
+            ("CFBundleDisplayName", "OpenNBT"),
             ("CFBundleExecutable", "LIVI"),
             ("CFBundleIconFile", "livi.icns"),
             ("CFBundlePackageType", "APPL"),
@@ -146,15 +146,15 @@ pub fn run(arch: Arch) -> Result<(), String> {
             ),
             (
                 "NSCameraUsageDescription",
-                "LIVI requires camera access for CarPlay.",
+                "OpenNBT requires camera access for CarPlay.",
             ),
             (
                 "NSMicrophoneUsageDescription",
-                "LIVI requires microphone access for voice control.",
+                "OpenNBT requires microphone access for voice control.",
             ),
             (
                 "NSLocalNetworkUsageDescription",
-                "LIVI talks to a LIVI Link dongle on the local network.",
+                "OpenNBT talks to a LIVI Link dongle on the local network.",
             ),
         ]),
     )

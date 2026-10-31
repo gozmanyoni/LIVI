@@ -2,14 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Additional terms: see NOTICE
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use livi_core_proto::config::Config;
 use livi_core_proto::input::{Input, Phase, Point};
-use livi_core_proto::state::{Display, Screen};
+use livi_core_proto::state::{Display, Screen, VideoRect};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -186,8 +187,49 @@ pub struct Ui {
 
 enum Cmd {
     Claim(String, oneshot::Sender<()>),
-    Release(String),
+    Release(String, u64),
+    VideoBox(String, u64, String),
     State(String, String),
+}
+
+#[derive(Clone)]
+struct VideoReadiness {
+    tx: watch::Sender<HashSet<String>>,
+    generations: Arc<Mutex<HashMap<String, u64>>>,
+}
+
+impl VideoReadiness {
+    fn invalidate(&self, tag: &str) -> u64 {
+        let mut generations = self.generations.lock().unwrap_or_else(|e| e.into_inner());
+        let generation = generations.entry(tag.to_string()).or_default();
+        *generation = generation
+            .checked_add(1)
+            .expect("video generation exhausted");
+        self.tx.send_if_modified(|ready| ready.remove(tag));
+        *generation
+    }
+
+    fn current(&self, tag: &str) -> u64 {
+        self.generations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(tag)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn update(&self, tag: &str, generation: u64, ready: bool) {
+        let generations = self.generations.lock().unwrap_or_else(|e| e.into_inner());
+        if generations.get(tag).copied().unwrap_or(0) != generation {
+            return;
+        }
+        if ready {
+            self.tx
+                .send_if_modified(|tags| tags.insert(tag.to_string()));
+        } else {
+            self.tx.send_if_modified(|tags| tags.remove(tag));
+        }
+    }
 }
 
 fn round_half_up(v: f64) -> f64 {
@@ -200,6 +242,8 @@ pub struct CompositorControl {
     panels: watch::Receiver<HashMap<String, Panel>>,
     ui: watch::Receiver<Option<Ui>>,
     displays: watch::Receiver<Option<Vec<Display>>>,
+    video_ready: watch::Receiver<HashSet<String>>,
+    readiness: VideoReadiness,
     touches: broadcast::Sender<Input>,
     fullscreen: broadcast::Sender<(Screen, bool)>,
 }
@@ -210,6 +254,11 @@ impl CompositorControl {
         let (panels_tx, panels) = watch::channel(HashMap::new());
         let (ui_tx, ui) = watch::channel(None);
         let (displays_tx, displays) = watch::channel(None);
+        let (video_ready_tx, video_ready) = watch::channel(HashSet::new());
+        let readiness = VideoReadiness {
+            tx: video_ready_tx,
+            generations: Arc::new(Mutex::new(HashMap::new())),
+        };
         let (touches, _) = broadcast::channel(TOUCH_BACKLOG);
         let (fullscreen, _) = broadcast::channel(TOUCH_BACKLOG);
         tokio::spawn(
@@ -218,6 +267,7 @@ impl CompositorControl {
                 panels_tx,
                 ui_tx,
                 displays_tx,
+                readiness.clone(),
                 touches.clone(),
                 fullscreen.clone(),
             )
@@ -228,6 +278,8 @@ impl CompositorControl {
             panels,
             ui,
             displays,
+            video_ready,
+            readiness,
             touches,
             fullscreen,
         }
@@ -235,6 +287,11 @@ impl CompositorControl {
 
     pub fn displays(&self) -> watch::Receiver<Option<Vec<Display>>> {
         self.displays.clone()
+    }
+
+    /// Tags with a current buffer, as confirmed by the connected compositor.
+    pub fn video_ready(&self) -> watch::Receiver<HashSet<String>> {
+        self.video_ready.clone()
     }
 
     pub fn touches(&self) -> broadcast::Receiver<Input> {
@@ -252,7 +309,8 @@ impl CompositorControl {
     }
 
     pub fn release(&self, tag: &str) {
-        let _ = self.tx.send(Cmd::Release(tag.to_string()));
+        let generation = self.readiness.invalidate(tag);
+        let _ = self.tx.send(Cmd::Release(tag.to_string(), generation));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -283,6 +341,20 @@ impl CompositorControl {
     pub fn videoshow(&self, tag: &str, visible: bool) {
         let line = format!("videoshow {tag} {}\n", u8::from(visible));
         let _ = self.tx.send(Cmd::State(format!("show:{tag}"), line));
+    }
+
+    pub fn videobox(&self, tag: &str, screen: &str, viewport: Option<VideoRect>) {
+        let generation = self.readiness.invalidate(tag);
+        let line = match viewport.filter(|rect| rect.valid()) {
+            Some(rect) => format!(
+                "videobox {tag} {screen} {} {} {} {} {generation}\n",
+                rect.x, rect.y, rect.width, rect.height
+            ),
+            None => format!("videobox {tag} {screen} - {generation}\n"),
+        };
+        let _ = self
+            .tx
+            .send(Cmd::VideoBox(tag.to_string(), generation, line));
     }
 
     pub fn screen(&self, role: &str, on: bool, size: Option<(u32, u32)>) {
@@ -370,11 +442,13 @@ struct Actor {
     outbox: Vec<String>,
     state: Vec<(String, String)>,
     queue: Vec<(String, oneshot::Sender<()>)>,
-    in_flight: Option<String>,
+    in_flight: Option<(String, u64)>,
     claim_deadline: Option<tokio::time::Instant>,
     panels: watch::Sender<HashMap<String, Panel>>,
     ui: watch::Sender<Option<Ui>>,
     displays: watch::Sender<Option<Vec<Display>>>,
+    video_ready: VideoReadiness,
+    connection: u64,
     incoming: Option<(usize, Vec<Display>)>,
     touches: broadcast::Sender<Input>,
     fullscreen: broadcast::Sender<(Screen, bool)>,
@@ -386,6 +460,7 @@ impl Actor {
         panels: watch::Sender<HashMap<String, Panel>>,
         ui: watch::Sender<Option<Ui>>,
         displays: watch::Sender<Option<Vec<Display>>>,
+        video_ready: VideoReadiness,
         touches: broadcast::Sender<Input>,
         fullscreen: broadcast::Sender<(Screen, bool)>,
     ) -> Self {
@@ -400,6 +475,8 @@ impl Actor {
             panels,
             ui,
             displays,
+            video_ready,
+            connection: 0,
             incoming: None,
             touches,
             fullscreen,
@@ -407,7 +484,7 @@ impl Actor {
     }
 
     async fn run(mut self, mut rx: mpsc::UnboundedReceiver<Cmd>) {
-        let (lines_tx, mut lines) = mpsc::unbounded_channel::<Option<String>>();
+        let (lines_tx, mut lines) = mpsc::unbounded_channel::<(u64, Option<String>)>();
         let startup_until = tokio::time::Instant::now() + STARTUP_RETRY_WINDOW;
         let mut next_retry = tokio::time::Instant::now();
         let mut connected_once = false;
@@ -419,12 +496,16 @@ impl Actor {
                     Some(cmd) => self.on_cmd(cmd).await,
                     None => return,
                 },
-                line = lines.recv() => match line.flatten() {
-                    Some(line) => self.on_line(&line).await,
-                    None => self.writer = None,
+                Some((connection, line)) = lines.recv() => {
+                    if connection == self.connection && self.writer.is_some() {
+                        match line {
+                            Some(line) => self.on_line(&line).await,
+                            None => self.disconnect(),
+                        }
+                    }
                 },
                 _ = async { tokio::time::sleep_until(deadline.unwrap()).await }, if deadline.is_some() => {
-                    self.abort_in_flight().await;
+                    self.abort_in_flight(None).await;
                 }
                 _ = tokio::time::sleep_until(next_retry), if self.writer.is_none() => {
                     connected_once |= self.try_connect(&lines_tx).await;
@@ -442,22 +523,37 @@ impl Actor {
         }
     }
 
-    async fn try_connect(&mut self, lines_tx: &mpsc::UnboundedSender<Option<String>>) -> bool {
+    async fn try_connect(
+        &mut self,
+        lines_tx: &mpsc::UnboundedSender<(u64, Option<String>)>,
+    ) -> bool {
         let Ok(stream) = UnixStream::connect(&self.path).await else {
             return false;
         };
         let (rd, wr) = stream.into_split();
+        self.video_ready.tx.send_replace(HashSet::new());
+        self.connection += 1;
+        let connection = self.connection;
         self.writer = Some(wr);
         let tx = lines_tx.clone();
         tokio::spawn(async move {
             let mut reader = BufReader::new(rd).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                let _ = tx.send(Some(line));
+                let _ = tx.send((connection, Some(line)));
             }
-            let _ = tx.send(None);
+            let _ = tx.send((connection, None));
         });
         self.flush().await;
         true
+    }
+
+    fn disconnect(&mut self) {
+        self.writer = None;
+        self.video_ready.tx.send_if_modified(|ready| {
+            let changed = !ready.is_empty();
+            ready.clear();
+            changed
+        });
     }
 
     async fn on_cmd(&mut self, cmd: Cmd) {
@@ -466,19 +562,36 @@ impl Actor {
                 self.queue.push((tag, done));
                 self.pump().await;
             }
-            Cmd::Release(tag) => {
+            Cmd::Release(tag, generation) => {
                 self.queue.retain(|(t, _)| *t != tag);
-                if self.in_flight.as_deref() == Some(&tag) {
-                    self.abort_in_flight().await;
+                if self
+                    .in_flight
+                    .as_ref()
+                    .is_some_and(|(pending, _)| *pending == tag)
+                {
+                    self.abort_in_flight(Some(generation)).await;
+                } else {
+                    self.outbox.push(format!("unclaim {tag} {generation}\n"));
+                    self.flush().await;
                 }
             }
             Cmd::State(key, line) => {
-                match self.state.iter_mut().find(|(k, _)| *k == key) {
-                    Some(slot) => slot.1 = line,
-                    None => self.state.push((key, line)),
-                }
+                self.keep_state(key, line);
                 self.flush().await;
             }
+            Cmd::VideoBox(tag, generation, line) => {
+                if self.video_ready.current(&tag) == generation {
+                    self.keep_state(format!("box:{tag}"), line);
+                    self.flush().await;
+                }
+            }
+        }
+    }
+
+    fn keep_state(&mut self, key: String, line: String) {
+        match self.state.iter_mut().find(|(k, _)| *k == key) {
+            Some(slot) => slot.1 = line,
+            None => self.state.push((key, line)),
         }
     }
 
@@ -487,16 +600,22 @@ impl Actor {
             return;
         }
         let (tag, done) = self.queue.remove(0);
-        self.outbox.push(format!("claim {tag}\n"));
+        let generation = self.video_ready.current(&tag);
+        self.outbox.push(if generation == 0 {
+            format!("claim {tag}\n")
+        } else {
+            format!("claim {tag} {generation}\n")
+        });
         self.flush().await;
-        self.in_flight = Some(tag);
+        self.in_flight = Some((tag, generation));
         self.claim_deadline = Some(tokio::time::Instant::now() + CLAIM_TIMEOUT);
         let _ = done.send(());
     }
 
-    async fn abort_in_flight(&mut self) {
-        if let Some(tag) = self.in_flight.take() {
-            self.outbox.push(format!("unclaim {tag}\n"));
+    async fn abort_in_flight(&mut self, generation: Option<u64>) {
+        if let Some((tag, _)) = self.in_flight.take() {
+            let generation = generation.unwrap_or_else(|| self.video_ready.invalidate(&tag));
+            self.outbox.push(format!("unclaim {tag} {generation}\n"));
             self.flush().await;
         }
         self.end_claim().await;
@@ -511,6 +630,24 @@ impl Actor {
     async fn on_line(&mut self, line: &str) {
         let mut words = line.split(' ');
         match words.next() {
+            Some("videoready") => {
+                let parts: Vec<_> = words.collect();
+                let (tag, generation, ready) = match parts.as_slice() {
+                    [tag, ready] => (*tag, 0, *ready),
+                    [tag, generation, ready] => {
+                        let Ok(generation) = generation.parse() else {
+                            return;
+                        };
+                        (*tag, generation, *ready)
+                    }
+                    _ => return,
+                };
+                match ready {
+                    "1" => self.video_ready.update(tag, generation, true),
+                    "0" => self.video_ready.update(tag, generation, false),
+                    _ => {}
+                }
+            }
             Some("touch") => {
                 if let Some(input) = touch_of(line) {
                     let _ = self.touches.send(input);
@@ -533,8 +670,22 @@ impl Actor {
                 let _ = self.fullscreen.send((screen, on));
             }
             Some("bound") => {
-                let tag = &line["bound ".len()..];
-                if self.in_flight.as_deref() == Some(tag) {
+                let parts: Vec<_> = words.collect();
+                let (tag, generation) = match parts.as_slice() {
+                    [tag] => (*tag, 0),
+                    [tag, generation] => {
+                        let Ok(generation) = generation.parse() else {
+                            return;
+                        };
+                        (*tag, generation)
+                    }
+                    _ => return,
+                };
+                if self
+                    .in_flight
+                    .as_ref()
+                    .is_some_and(|(pending, expected)| pending == tag && *expected == generation)
+                {
                     self.end_claim().await;
                 }
             }
@@ -618,7 +769,7 @@ impl Actor {
         if writer.write_all(out.as_bytes()).await.is_ok() {
             self.outbox.clear();
         } else {
-            self.writer = None;
+            self.disconnect();
         }
     }
 }
@@ -778,6 +929,245 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_latest_viewport_and_its_clear_are_replayed_after_reconnect() {
+        let dir = TempDir::new();
+        let (comp, ctrl) = setup(&dir);
+        ctrl.videobox(
+            "cluster-main",
+            "main",
+            Some(VideoRect {
+                x: 0.1,
+                y: 0.2,
+                width: 0.3,
+                height: 0.4,
+            }),
+        );
+        ctrl.videobox(
+            "cluster-main",
+            "main",
+            Some(VideoRect {
+                x: 0.2,
+                y: 0.3,
+                width: 0.4,
+                height: 0.5,
+            }),
+        );
+        let (mut rd, wr) = comp.accept().await;
+        assert_eq!(
+            line(&mut rd).await,
+            "videobox cluster-main main 0.2 0.3 0.4 0.5 2\n"
+        );
+        drop((rd, wr));
+        let (mut rd, wr) = comp.accept().await;
+        assert_eq!(
+            line(&mut rd).await,
+            "videobox cluster-main main 0.2 0.3 0.4 0.5 2\n"
+        );
+        ctrl.videobox("cluster-main", "main", None);
+        assert_eq!(line(&mut rd).await, "videobox cluster-main main - 3\n");
+        drop((rd, wr));
+        let (mut rd, _wr) = comp.accept().await;
+        assert_eq!(line(&mut rd).await, "videobox cluster-main main - 3\n");
+        ctrl.videobox(
+            "cluster-main",
+            "main",
+            Some(VideoRect {
+                x: f64::NAN,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+            }),
+        );
+        assert_eq!(line(&mut rd).await, "videobox cluster-main main - 4\n");
+    }
+
+    #[tokio::test]
+    async fn readiness_requires_current_compositor_buffers_and_resets_after_disconnect() {
+        let dir = TempDir::new();
+        let (comp, ctrl) = setup(&dir);
+        let mut ready = ctrl.video_ready();
+        let (rd, mut wr) = comp.accept().await;
+        wr.write_all(b"videoready cluster-main 1\n").await.unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            ready.wait_for(|tags| tags.contains("cluster-main")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        drop((rd, wr));
+        tokio::time::timeout(Duration::from_secs(5), ready.wait_for(HashSet::is_empty))
+            .await
+            .unwrap()
+            .unwrap();
+
+        let (_rd, mut wr) = comp.accept().await;
+        assert!(
+            ready.borrow().is_empty(),
+            "reconnecting does not restore stale readiness"
+        );
+        wr.write_all(b"videoready cluster-main 2\nvideoready cluster-main 1 extra\nvideoready cluster-aux 1\n")
+            .await.unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            ready.wait_for(|tags| tags.contains("cluster-aux")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            !ready.borrow().contains("cluster-main"),
+            "malformed status is ignored"
+        );
+        wr.write_all(b"videoready cluster-main 1\nvideoready cluster-aux 0\n")
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            ready.wait_for(|tags| tags.contains("cluster-main") && !tags.contains("cluster-aux")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        wr.write_all(b"videoready cluster-main 0\n").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), ready.wait_for(HashSet::is_empty))
+            .await
+            .unwrap()
+            .unwrap();
+        wr.write_all(b"videoready cluster-main 1\n").await.unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            ready.wait_for(|tags| tags.contains("cluster-main")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        ctrl.release("cluster-main");
+        assert!(
+            ready.borrow().is_empty(),
+            "release synchronously invalidates the old plane"
+        );
+    }
+
+    #[tokio::test]
+    async fn releasing_a_bound_plane_unclaims_it_and_ignores_old_generation_readiness() {
+        let dir = TempDir::new();
+        let (comp, ctrl) = setup(&dir);
+        let mut ready = ctrl.video_ready();
+        ctrl.claim("cluster-main").await;
+        let (mut rd, mut wr) = comp.accept().await;
+        assert_eq!(line(&mut rd).await, "claim cluster-main\n");
+        wr.write_all(b"bound cluster-main\nvideoready cluster-main 1\n")
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            ready.wait_for(|tags| tags.contains("cluster-main")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        ctrl.release("cluster-main");
+        assert!(
+            ready.borrow().is_empty(),
+            "the session reset is synchronous"
+        );
+        assert_eq!(
+            line(&mut rd).await,
+            "unclaim cluster-main 1\n",
+            "bound planes are also released"
+        );
+        ctrl.backdrop("#000000");
+        assert_eq!(
+            line(&mut rd).await,
+            "backdrop 0 0 0\n",
+            "unclaim is sent exactly once"
+        );
+        wr.write_all(b"videoready cluster-main 1\nvideoready cluster-aux 1\n")
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            ready.wait_for(|tags| tags.contains("cluster-aux")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            !ready.borrow().contains("cluster-main"),
+            "queued old readiness stays suppressed"
+        );
+        wr.write_all(b"videoready cluster-main 1 0\nvideoready cluster-main 1 1\n")
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            ready.wait_for(|tags| tags.contains("cluster-main")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn rapid_viewport_changes_ignore_both_ready_and_reset_from_older_generations() {
+        let dir = TempDir::new();
+        let (comp, ctrl) = setup(&dir);
+        let mut ready = ctrl.video_ready();
+        let first = VideoRect {
+            x: 0.1,
+            y: 0.1,
+            width: 0.3,
+            height: 0.3,
+        };
+        let second = VideoRect { x: 0.2, ..first };
+        ctrl.videobox("cluster-main", "main", Some(first));
+        ctrl.videobox("cluster-main", "main", Some(second));
+        let (mut rd, mut wr) = comp.accept().await;
+        assert_eq!(
+            line(&mut rd).await,
+            "videobox cluster-main main 0.2 0.1 0.3 0.3 2\n"
+        );
+        wr.write_all(b"videoready cluster-main 1 0\nvideoready cluster-main 1 1\nvideoready cluster-main 1\nvideoready cluster-aux 1\n").await.unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            ready.wait_for(|tags| tags.contains("cluster-aux")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            !ready.borrow().contains("cluster-main"),
+            "older reset and ready events cannot validate the new box"
+        );
+        wr.write_all(b"videoready cluster-main 2 1\n")
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            ready.wait_for(|tags| tags.contains("cluster-main")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        wr.write_all(b"videoready cluster-main 1 0\nvideoready cluster-aux 0\n")
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            ready.wait_for(|tags| !tags.contains("cluster-aux")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            ready.borrow().contains("cluster-main"),
+            "older resets cannot blank a current frame"
+        );
+    }
+
+    #[tokio::test]
     async fn claims_go_one_at_a_time_until_bound() {
         let dir = TempDir::new();
         let (comp, ctrl) = setup(&dir);
@@ -797,7 +1187,7 @@ mod tests {
             .unwrap();
         assert_eq!(line(&mut rd).await, "claim cluster-cluster\n");
         ctrl.release("cluster-cluster");
-        assert_eq!(line(&mut rd).await, "unclaim cluster-cluster\n");
+        assert_eq!(line(&mut rd).await, "unclaim cluster-cluster 1\n");
     }
 
     #[tokio::test]

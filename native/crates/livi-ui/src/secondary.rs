@@ -31,7 +31,7 @@ fn title(screen: Screen) -> String {
         match screen {
             Screen::Cluster => "Cluster".into(),
             Screen::Aux => "Auxiliary".into(),
-            Screen::Main => "LIVI".into(),
+            Screen::Main => "OpenNBT".into(),
         }
     }
 }

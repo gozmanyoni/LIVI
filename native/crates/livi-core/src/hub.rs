@@ -129,6 +129,7 @@ mod tests {
             aux: Front::Livi,
         };
         Hub::new(State {
+            map_preview: Default::default(),
             front: livi,
             sessions: Default::default(),
             now_playing: Default::default(),

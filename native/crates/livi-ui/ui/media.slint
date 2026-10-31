@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Additional terms: see NOTICE
 
-import { Theme } from "theme.slint";
+import { Theme, Ui } from "theme.slint";
 import { Focus } from "focus.slint";
 import { MediaText, Press, RoundButton, Spectrum, SourceTabs } from "media_parts.slint";
 import { DabPage, DabState, StationData } from "dab.slint";
@@ -17,14 +17,16 @@ component Progress inherits Rectangle {
     in property <float> total-ms;
     in property <float> elapsed-ms;
     in property <length> bar-height;
+    in property <length> touch-height;
     callback seek(float);
 
     property <bool> dragging;
     property <float> drag-share;
     property <float> shown: dragging ? drag-share : progress;
     property <float> shown-ms: shown * total-ms;
-    property <length> knob-h: round(bar-height * 2.4 / 1px) * 1px;
-    property <length> knob-w: round(knob-h * 1.75 / 1px) * 1px;
+    property <length> knob-h: min(touch-height - 12px, 28px);
+    property <length> knob-w: 12px;
+    property <length> time-font: clamp(touch-height * 0.37, 16px, 24px);
 
     pure function clock(ms: float) -> string {
         let s = floor(max(ms, 0) / 1000);
@@ -33,14 +35,15 @@ component Progress inherits Rectangle {
         return m + ":" + (r < 10 ? "0" : "") + r;
     }
 
-    height: max(knob-h, 20px);
+    // The full band accepts scrubbing; the visible line stays deliberately thin.
+    height: touch-height;
     HorizontalLayout {
         spacing: 12px;
         Text {
-            min-width: 3.5 * 14px;
+            min-width: root.time-font * 3.5;
             text: root.clock(root.dragging ? root.shown-ms : root.elapsed-ms);
             color: Theme.text.with-alpha(0.85);
-            font-size: 14px;
+            font-size: root.time-font;
             vertical-alignment: center;
         }
         track := Rectangle {
@@ -48,10 +51,10 @@ component Progress inherits Rectangle {
             Rectangle {
                 y: (parent.height - root.bar-height) / 2;
                 height: root.bar-height;
-                border-radius: root.bar-height / 1.6;
+                border-radius: 0px;
                 clip: true;
-                background: Theme.track;
-                drop-shadow-blur: root.focused ? 8px : 0;
+                background: root.focused ? Theme.text-secondary : Theme.track;
+                drop-shadow-blur: 0px;
                 drop-shadow-color: Theme.highlight.with-alpha(0.35);
                 Rectangle {
                     x: 0;
@@ -64,7 +67,7 @@ component Progress inherits Rectangle {
                 height: root.knob-h;
                 y: (parent.height - self.height) / 2;
                 x: clamp(parent.width * root.shown - self.width / 2, 0, parent.width - self.width);
-                border-radius: self.height / 2;
+                border-radius: 0px;
                 background: Theme.highlight;
                 drop-shadow-blur: 4px;
                 drop-shadow-offset-y: 1px;
@@ -91,10 +94,10 @@ component Progress inherits Rectangle {
             }
         }
         Text {
-            min-width: 3.5 * 14px;
+            min-width: root.time-font * 3.5;
             text: "-" + root.clock(root.total-ms - (root.dragging ? root.shown-ms : root.elapsed-ms));
             color: Theme.text.with-alpha(0.85);
-            font-size: 14px;
+            font-size: root.time-font;
             horizontal-alignment: right;
             vertical-alignment: center;
         }
@@ -136,25 +139,27 @@ component PhonePlayer inherits Rectangle {
     property <bool> tiny: h > 0 && h <= 320;
     property <float> text-scale: tiny ? 0.88 : 1;
 
-    property <float> page-pad-raw: round(clampf(min-side * 0.02, 12, 22));
+    property <float> page-pad-raw: round(clampf(min-side * 0.055, 12, 30));
     property <float> page-pad: tiny ? min(page-pad-raw, 10) : page-pad-raw;
-    property <float> col-gap: round(clampf(w * 0.025, 16, 28));
-    property <float> ctrl-size: round(clampf(h * 0.095, 50, 82));
-    property <float> ctrl-gap: round(clampf(w * 0.03, 16, 32));
-    property <float> progress-h-raw: round(clampf(h * 0.012, 8, 12));
-    property <float> progress-h: max(6, round(progress-h-raw * (tiny ? 0.85 : 1)));
+    property <float> col-gap: round(clampf(w * 0.045, 20, 64));
+    property <float> ctrl-size: min(round(clampf(h * 0.22, 56, 96)), floor((w - page-pad * 2 - ctrl-gap * 2) / 3.125));
+    property <float> play-size: round(ctrl-size * 1.125);
+    property <float> seek-size: round(clampf(h * 0.14, 42, 68));
+    property <float> ctrl-gap: round(clampf(w * 0.02, 12, 32));
+    property <float> progress-h-raw: round(clampf(h * 0.008, 4, 6));
+    property <float> progress-h: max(4, round(progress-h-raw * (tiny ? 0.85 : 1)));
 
     property <float> title-px: max(12, round(round(clampf(min-side * 0.07, 18, 48)) * text-scale));
-    property <float> artist-px: max(11, round(round(clampf(min-side * 0.034, 14, 24)) * text-scale));
-    property <float> album-px: max(10, round(round(clampf(min-side * 0.028, 13, 20)) * text-scale));
-    property <float> app-px: max(10, round(12 * text-scale));
+    property <float> artist-px: max(11, round(22 * Ui.nbt-scale));
+    property <float> album-px: max(10, round(20 * Ui.nbt-scale));
+    property <float> app-px: max(9, round(16 * Ui.nbt-scale));
 
-    property <float> bottom-dock-h: ctrl-size + 16 + (progress-h + 20);
+    property <float> bottom-dock-h: play-size + seek-size + (tiny ? 6 : 16);
     property <float> content-h: max(0, h - page-pad * 2 - bottom-dock-h);
     property <float> inner-w: max(0, w - page-pad * 2);
-    property <bool> two-col: inner-w >= 120 + 140 + col-gap;
-    property <float> art-allowance: max(140, floor(inner-w - 120 - col-gap));
-    property <float> art-px: round(clampf(min(content-h, art-allowance), 140, 520));
+    property <bool> two-col: inner-w >= 120 + 100 + col-gap && content-h >= 72;
+    property <float> art-allowance: max(0, floor(inner-w - 120 - col-gap));
+    property <float> art-px: round(clampf(min(content-h, art-allowance), 0, 520));
     property <float> text-side-pad: max(6, round(page-pad * 0.75));
 
     VerticalLayout {
@@ -178,7 +183,7 @@ component PhonePlayer inherits Rectangle {
                         text: root.track-title;
                         color: Theme.text;
                         font-size: root.title-px * 1px;
-                        font-weight: 800;
+                        font-weight: 300;
                         letter-spacing: 0.2px;
                         overflow: elide;
                     }
@@ -207,21 +212,26 @@ component PhonePlayer inherits Rectangle {
                         width: root.art-px * 1px;
                         height: root.art-px * 1px;
                         y: (parent.height - self.height) / 2;
-                        border-radius: 34px;
-                        border-width: Focus.main(root.focus-base) ? 3px : 0;
-                        border-color: Theme.primary;
+                        border-radius: 0px;
+                        border-width: Focus.main(root.focus-base) ? 2px : 1px;
+                        border-color: Focus.main(root.focus-base) ? Theme.selection-edge : #8b8b8b;
                         clip: true;
-                        background: root.show-spectrum ? transparent : Theme.surface;
+                        background: Theme.panel;
+                        drop-shadow-blur: 18px;
+                        drop-shadow-offset-y: 8px;
+                        drop-shadow-color: #000000a0;
                         if !root.show-spectrum && root.has-artwork: Image {
-                            width: parent.width;
-                            height: parent.height;
+                            x: 3px;
+                            y: 3px;
+                            width: parent.width - 6px;
+                            height: parent.height - 6px;
                             source: root.artwork;
                             image-fit: cover;
                         }
-                        if !root.show-spectrum && !root.has-artwork: Text {
-                            text: MediaText.no-artwork;
-                            color: Theme.text.with-alpha(0.6);
-                            font-size: 12px;
+                        if !root.show-spectrum && !root.has-artwork: Image {
+                            width: parent.width * 0.35;
+                            height: self.width;
+                            source: @image-url("assets/id6-note.svg");
                         }
                         if root.show-spectrum: Spectrum {
                             x: max(8, round(root.art-px * 0.06)) * 1px;
@@ -251,15 +261,15 @@ component PhonePlayer inherits Rectangle {
                     focused: Focus.main(root.off);
                     flash: Press.prev;
                     size: root.ctrl-size * 1px;
-                    icon-size: round(root.ctrl-size * 0.46) * 1px;
+                    icon-size: round(root.ctrl-size * 0.50) * 1px;
                     icon: @image-url("icons/SkipPrevious.svg");
                     clicked => { root.prev(); }
                 }
                 RoundButton {
                     focused: Focus.main(root.off + 1);
                     flash: Press.play;
-                    size: root.ctrl-size * 1px;
-                    icon-size: round(root.ctrl-size * 0.46) * 1px;
+                    size: root.play-size * 1px;
+                    icon-size: round(root.play-size * 0.50) * 1px;
                     icon: root.playing ? @image-url("icons/Pause.svg") : @image-url("icons/PlayArrow.svg");
                     clicked => { root.play-pause(); }
                 }
@@ -267,7 +277,7 @@ component PhonePlayer inherits Rectangle {
                     focused: Focus.main(root.off + 2);
                     flash: Press.next;
                     size: root.ctrl-size * 1px;
-                    icon-size: round(root.ctrl-size * 0.46) * 1px;
+                    icon-size: round(root.ctrl-size * 0.50) * 1px;
                     icon: @image-url("icons/SkipNext.svg");
                     clicked => { root.next(); }
                 }
@@ -279,6 +289,7 @@ component PhonePlayer inherits Rectangle {
                 total-ms: root.total-ms;
                 elapsed-ms: root.elapsed-ms;
                 bar-height: root.progress-h * 1px;
+                touch-height: root.seek-size * 1px;
                 seek(f) => { root.seek(f); }
             }
         }
@@ -307,20 +318,44 @@ export component MediaPage inherits Rectangle {
 
     property <int> base: DabState.receiver ? 2 : 0;
     property <bool> dab-shown: DabState.receiver && DabState.view-dab;
-    property <length> tabs-h: DabState.receiver ? 48px : 0;
+    property <bool> stacked-sources: DabState.receiver && root.width < 600px;
+    property <length> source-h: root.height < 300px ? 48px : 64px;
+    property <length> heading-h: (root.height < 300px ? 52px : 80px) + (root.stacked-sources ? root.source-h : 0px);
+    property <length> tabs-h: root.heading-h;
 
-    background: Theme.background;
+    background: Theme.backdrop;
 
     Rectangle {
+        y: 0px;
+        height: root.heading-h;
+        Text {
+            x: 28px;
+            text: "Media/Radio";
+            color: Theme.text;
+            font-size: root.height < 300px ? 20px : 32px;
+            font-weight: 300;
+            height: root.heading-h - (root.stacked-sources ? root.source-h : 0px);
+            vertical-alignment: center;
+        }
         if DabState.receiver: SourceTabs {
-            y: 0;
-            width: parent.width;
-            height: root.tabs-h;
+            x: root.stacked-sources ? 20px : parent.width - self.width - 28px;
+            y: root.stacked-sources ? parent.height - self.height : (parent.height - self.height) / 2;
+            width: min(400px, parent.width - (root.stacked-sources ? 40px : 280px));
+            height: root.source-h;
             dab-active: DabState.view-dab;
             focus-base: 0;
             phone => { DabState.phone(); }
             dab => { DabState.resume(); }
         }
+        Rectangle {
+            x: 28px;
+            y: parent.height - 1px;
+            width: parent.width - 56px;
+            height: 1px;
+            background: @linear-gradient(90deg, #ffffff80 0%, #77777760 70%, transparent 100%);
+        }
+    }
+    Rectangle {
         if !root.dab-shown: PhonePlayer {
             y: root.tabs-h;
             width: parent.width;

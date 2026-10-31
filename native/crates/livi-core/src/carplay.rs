@@ -241,7 +241,7 @@ fn even(v: u32) -> u32 {
 
 pub fn cluster_displayed(cfg: &Config) -> bool {
     let d = cfg.dashboard;
-    d.main || d.cluster || d.aux
+    cfg.car_play_nav_tile || d.main || d.cluster || d.aux
 }
 
 fn panel_mm(panel: Option<&Panel>, w: u32, h: u32) -> Option<(i64, i64)> {
@@ -796,7 +796,10 @@ mod tests {
         assert_eq!(sc.info.device_id, "11:11:11:11:11:11");
         assert_eq!(sc.info.icons.len(), 3);
         assert_eq!(sc.audio_device, "sink");
-        assert!(sc.info.cluster.is_none());
+        assert!(
+            sc.info.cluster.is_some(),
+            "the navigation tile advertises a secondary display"
+        );
     }
 
     #[test]
@@ -828,6 +831,7 @@ mod tests {
         config.wifi_interface = livi_link_host::link::CHOICE.into();
         config.bt_adapter = livi_link_host::link::CHOICE.into();
         let state = State {
+            map_preview: Default::default(),
             front: PerScreen {
                 main: Front::Livi,
                 cluster: Front::Livi,
@@ -954,6 +958,33 @@ mod tests {
             ("Center_Display", "Cluster_Display")
         );
         assert!(sc.cluster_content.is_some());
+    }
+
+    #[test]
+    fn a_home_map_advertises_the_secondary_display_without_a_dashboard() {
+        let mut cfg = defaults();
+        cfg.dashboard = Default::default();
+        let offered = |cfg: &Config| {
+            stack_config(
+                cfg,
+                &HashMap::new(),
+                None,
+                false,
+                &addresses(),
+                &livi_theme(),
+            )
+            .info
+            .cluster
+            .is_some()
+        };
+        assert!(offered(&cfg));
+        cfg.car_play_nav_tile = false;
+        assert!(!offered(&cfg));
+        cfg.dashboard.cluster = true;
+        assert!(
+            offered(&cfg),
+            "the existing dashboard still advertises its display"
+        );
     }
 
     #[test]

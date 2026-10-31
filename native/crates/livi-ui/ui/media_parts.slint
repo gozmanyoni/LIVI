@@ -26,7 +26,7 @@ export component RoundButton inherits Rectangle {
     in property <length> size;
     in property <length> icon-size;
     in property <image> icon;
-    in property <color> icon-color: Theme.text;
+    in property <color> icon-color: #f3f3f3;
     callback clicked();
 
     property <bool> down: touch.pressed || root.flash || root.pressed;
@@ -39,19 +39,19 @@ export component RoundButton inherits Rectangle {
         property <float> s: root.down && !root.focused ? 0.94 : 1;
         width: root.size * s;
         height: root.size * s;
-        border-radius: self.width / 2;
-        background: root.hover || root.down || root.focused ? Theme.button-active : Theme.button;
+        border-radius: 0px;
+        background: root.hover || root.down || root.focused ? Theme.selection : @linear-gradient(180deg, #35363a 0%, #15161a 100%);
         animate width, height { duration: 110ms; easing: ease; }
         Rectangle {
-            border-radius: parent.width / 2;
-            border-width: root.focused ? 3px : root.down ? 4px : root.hover ? 2px : 0;
-            border-color: Theme.primary;
+            border-radius: 0px;
+            border-width: 1px;
+            border-color: root.focused || root.down || root.hover ? Theme.selection-edge : #66686d;
         }
         Image {
             width: root.icon-size;
             height: root.icon-size;
             source: root.icon;
-            colorize: root.icon-color;
+            colorize: root.hover || root.down || root.focused ? #ffffff : root.icon-color;
         }
     }
     touch := TouchArea {
@@ -125,19 +125,23 @@ component SourceTab inherits Rectangle {
     in property <bool> on;
     in property <bool> focused;
     callback picked();
-    height: label-text.preferred-height + 12px;
-    width: label-text.preferred-width + 40px;
-    border-radius: self.height / 2;
-    border-width: root.focused ? 3px : 0;
-    border-color: Theme.primary;
-    label-text := Text {
-        text: root.label;
-        font-size: 16px;
-        font-weight: 700;
-        color: root.on ? Theme.primary : Theme.text;
-        opacity: root.on ? 1 : 0.65;
+    border-radius: 0px;
+    background: root.focused || touch.pressed ? Theme.selection : @linear-gradient(180deg, #303136 0%, #15161a 100%);
+    border-width: 1px;
+    border-color: root.focused || root.on ? Theme.selection-edge : #66686d;
+    Rectangle {
+        y: parent.height - 3px;
+        height: 3px;
+        background: root.on ? Theme.selection-edge : transparent;
     }
-    TouchArea {
+    Text {
+        text: root.label;
+        font-size: clamp(parent.height * 0.39, 18px, 25px);
+        font-weight: 400;
+        color: #f3f3f3;
+        opacity: root.on ? 1 : 0.75;
+    }
+    touch := TouchArea {
         clicked => {
             if (!root.on) {
                 root.picked();
@@ -151,39 +155,21 @@ export component SourceTabs inherits Rectangle {
     in property <int> focus-base;
     callback phone();
     callback dab();
-    height: pill.height + 8px;
-    pill := Rectangle {
-        y: 8px;
-        width: row.preferred-width;
-        height: row.preferred-height;
-        border-radius: self.height / 2;
-        background: #ffffff14;
-        row := HorizontalLayout {
-            padding-left: 8px;
-            padding-right: 8px;
-            padding-top: 4px;
-            padding-bottom: 4px;
-            spacing: 8px;
-            SourceTab {
-                label: MediaText.phone-source;
-                on: !root.dab-active;
-                focused: Focus.main(root.focus-base);
-                picked => { root.phone(); }
-            }
-            Rectangle {
-                width: 1px;
-                VerticalLayout {
-                    padding-top: 6px;
-                    padding-bottom: 6px;
-                    Rectangle { background: Theme.divider; }
-                }
-            }
-            SourceTab {
-                label: MediaText.dab-source;
-                on: root.dab-active;
-                focused: Focus.main(root.focus-base + 1);
-                picked => { root.dab(); }
-            }
+    HorizontalLayout {
+        spacing: 12px;
+        SourceTab {
+            horizontal-stretch: 1;
+            label: MediaText.phone-source;
+            on: !root.dab-active;
+            focused: Focus.main(root.focus-base);
+            picked => { root.phone(); }
+        }
+        SourceTab {
+            horizontal-stretch: 1;
+            label: MediaText.dab-source;
+            on: root.dab-active;
+            focused: Focus.main(root.focus-base + 1);
+            picked => { root.dab(); }
         }
     }
 }

@@ -89,7 +89,30 @@ export global SettingsState {
 }
 
 export component SettingsView inherits Rectangle {
-    background: Theme.background;
+    background: Theme.backdrop;
+    property <bool> preview-shown: root.width > 700px && (SettingsState.kind == ScreenKind.list || SettingsState.kind == ScreenKind.select);
+
+    if root.preview-shown: Rectangle {
+        x: parent.width * 0.75;
+        y: parent.height * 0.26;
+        width: parent.width * 0.20;
+        height: self.width;
+        background: Theme.panel;
+        border-width: 1px;
+        border-color: #666666;
+        Rectangle {
+            x: 1px;
+            y: 1px;
+            width: parent.width - 2px;
+            height: 1px;
+            background: #c6c6c660;
+        }
+        Image {
+            width: parent.width * 0.56;
+            height: self.width;
+            source: @image-url("../assets/id6-gear.png");
+        }
+    }
 
     property <int> focus-index: Focus.zone == FocusZone.main ? Focus.main-index : -1;
     property <length> lead: Metrics.header-h + Metrics.header-mb;
@@ -113,7 +136,7 @@ export component SettingsView inherits Rectangle {
 
     VerticalLayout {
         padding-left: Metrics.pad-x;
-        padding-right: Metrics.pad-x;
+        padding-right: root.preview-shown ? root.width * 0.30 : Metrics.pad-x;
         padding-top: Metrics.pad-top;
         padding-bottom: Metrics.pad-bottom;
 
@@ -139,8 +162,8 @@ export component SettingsView inherits Rectangle {
                     padding-right: 0.5rem;
                     padding-bottom: 2px;
                     if SettingsState.kind == ScreenKind.list: Rectangle {
-                        background: SettingsState.rows.length > 0 ? Theme.paper : transparent;
-                        border-radius: 10px;
+                        background: transparent;
+                        border-radius: 0px;
                         VerticalLayout {
                         for r[i] in SettingsState.rows: Rectangle {
                             property <int> rel: root.focus-index - SettingsState.focus-base - r.focus-at;
@@ -149,7 +172,7 @@ export component SettingsView inherits Rectangle {
                             if r.kind == RowKind.picture: Rectangle {
                                 width: parent.side;
                                 height: parent.side;
-                                border-radius: 8px;
+                                border-radius: 0px;
                                 border-width: r.focus-at >= 0 && parent.rel == 0 ? 2px : 1px;
                                 border-color: r.focus-at >= 0 && parent.rel == 0 ? Theme.primary : Theme.divider;
                                 clip: true;
@@ -268,8 +291,8 @@ export component SettingsView inherits Rectangle {
         card := Rectangle {
             width: min(parent.width - 32px, 444px);
             height: content.preferred-height;
-            border-radius: 4px;
-            background: Theme.dark ? #383838 : #ffffff;
+            border-radius: 0px;
+            background: Theme.panel;
             drop-shadow-blur: 24px;
             drop-shadow-color: #00000080;
             content := VerticalLayout {
@@ -346,8 +369,8 @@ export component SettingsView inherits Rectangle {
         Rectangle {
             width: min(parent.width - 48px, 460px);
             height: box.preferred-height;
-            border-radius: 4px;
-            background: Theme.dark ? #383838 : #ffffff;
+            border-radius: 0px;
+            background: Theme.panel;
             drop-shadow-blur: 24px;
             drop-shadow-color: #00000080;
             box := VerticalLayout {

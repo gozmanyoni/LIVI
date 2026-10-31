@@ -340,6 +340,7 @@ mod tests {
             aux: livi_core_proto::state::Front::Livi,
         };
         let mut s = State {
+            map_preview: Default::default(),
             front: livi,
             sessions: Default::default(),
             now_playing: Default::default(),

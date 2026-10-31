@@ -16,6 +16,8 @@ use livi_ui_model::mask::{Mask, Stream, mask};
 use livi_ui_model::overlay;
 
 pub enum Update {
+    MapPreview(livi_core_proto::state::MapPreview),
+    MapPreviewEnabled(bool),
     Media(MediaView),
     Dab(DabView),
     Dash(Box<DashView>),
@@ -58,6 +60,16 @@ impl Follow {
         let all = keys.is_none_or(|k| k.contains(""));
         let hit = |key: &str| all || keys.is_some_and(|k| k.contains(key));
         let mut out = Vec::new();
+        if hit("mapPreview") || hit("config") {
+            out.push(Update::MapPreview(
+                serde_json::from_value(state["mapPreview"].clone()).unwrap_or_default(),
+            ));
+        }
+        if hit("config") {
+            out.push(Update::MapPreviewEnabled(
+                state["config"]["carPlayNavTile"].as_bool().unwrap_or(true),
+            ));
+        }
         if hit("nowPlaying") || hit("sessions") {
             out.push(Update::Media(self.media.read(state)));
         }

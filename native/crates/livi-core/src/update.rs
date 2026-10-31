@@ -15,7 +15,7 @@ use tokio::time::Instant;
 use crate::server::Core;
 
 const NIGHTLY_TAG: &str = "nightly";
-const USER_AGENT: &str = "LIVI-updater";
+const USER_AGENT: &str = "OpenNBT-updater";
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 const PACKAGE: &str = if cfg!(target_os = "macos") {
     ".dmg"
@@ -32,15 +32,18 @@ pub enum UpdateAsk {
 }
 
 fn feed_url(nightly: bool) -> String {
-    if let Ok(feed) = std::env::var("UPDATE_FEED")
-        && !feed.is_empty()
-    {
-        return feed;
+    let feed = std::env::var("UPDATE_FEED").ok();
+    let repo = std::env::var("UPDATE_REPO").ok();
+    feed_url_for(nightly, feed.as_deref(), repo.as_deref())
+}
+
+fn feed_url_for(nightly: bool, feed: Option<&str>, repo: Option<&str>) -> String {
+    if let Some(feed) = feed.filter(|f| !f.is_empty()) {
+        return feed.to_string();
     }
-    let repo = std::env::var("UPDATE_REPO").ok().filter(|r| !r.is_empty());
     let base = format!(
         "https://api.github.com/repos/{}/releases",
-        repo.as_deref().unwrap_or("f-io/LIVI")
+        repo.filter(|r| !r.is_empty()).unwrap_or("gozmanyoni/LIVI")
     );
     if nightly {
         format!("{base}/tags/{NIGHTLY_TAG}")
@@ -458,7 +461,39 @@ mod tests {
 
     #[test]
     fn the_channel_picks_the_feed() {
-        assert!(feed_url(false).ends_with("/releases/latest"));
-        assert!(feed_url(true).ends_with("/releases/tags/nightly"));
+        assert_eq!(
+            feed_url_for(false, None, None),
+            "https://api.github.com/repos/gozmanyoni/LIVI/releases/latest"
+        );
+        assert_eq!(
+            feed_url_for(true, None, None),
+            "https://api.github.com/repos/gozmanyoni/LIVI/releases/tags/nightly"
+        );
+    }
+
+    #[test]
+    fn explicit_update_overrides_are_preserved() {
+        for nightly in [false, true] {
+            assert_eq!(
+                feed_url_for(
+                    nightly,
+                    Some("https://updates.example/feed"),
+                    Some("other/fork")
+                ),
+                "https://updates.example/feed"
+            );
+            assert_eq!(
+                feed_url_for(nightly, Some(""), Some("")),
+                feed_url_for(nightly, None, None)
+            );
+        }
+        assert_eq!(
+            feed_url_for(false, None, Some("other/fork")),
+            "https://api.github.com/repos/other/fork/releases/latest"
+        );
+        assert_eq!(
+            feed_url_for(true, Some(""), Some("other/fork")),
+            "https://api.github.com/repos/other/fork/releases/tags/nightly"
+        );
     }
 }

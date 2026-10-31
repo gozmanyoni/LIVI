@@ -1,0 +1,491 @@
+// SPDX-FileCopyrightText: 2026 OpenNBT contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Additional terms: see NOTICE
+
+import { Theme, Ui } from "theme.slint";
+import { Focus, FocusZone } from "focus.slint";
+import { PhoneState } from "nav.slint";
+
+export struct MapViewport {
+    shown: bool,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+}
+
+component Id6Tile inherits Rectangle {
+    in property <int> tile;
+    in property <bool> map-ready;
+    in property <bool> selected;
+    in property <bool> available: true;
+    in property <bool> interactive: true;
+    in property <PhoneState> phone;
+    in property <string> track-title;
+    in property <string> artist;
+    in property <image> artwork;
+    in property <bool> has-artwork;
+    in property <string> calendar-day;
+    in property <string> calendar-month;
+    in property <string> calendar-year;
+    callback open();
+    callback hovered(bool);
+    property <float> s: Ui.nbt-scale;
+    property <length> title-h: 72px * s;
+    property <image> glyph: tile == 0 ? @image-url("icons/MusicNoteOutlined.svg")
+        : tile == 1 ? @image-url("icons/CallOutlined.svg")
+        : tile == 2 ? @image-url("assets/id6-flag.svg")
+        : tile == 3 ? @image-url("icons/DirectionsCarOutlined.svg")
+        : tile == 4 ? @image-url("icons/PublicOutlined.svg") : @image-url("icons/SettingsOutlined.svg");
+    property <string> title: tile == 0 ? "Media/Radio" : tile == 1 ? "Communication"
+        : tile == 2 ? "Navigation" : tile == 3 ? "My Vehicle" : tile == 4 ? "Connected Apps" : "Settings";
+    opacity: root.available ? 1 : 0.45;
+    clip: true;
+
+    // ID6's header is a separate glass strip; focus does not outline the whole tile.
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.title-h;
+        background: root.selected ? Theme.selection : Theme.dark ? @linear-gradient(180deg, #38383f, #222228 15%, #16161c 82%, #2b2b31) : @linear-gradient(180deg, #ffffff, #d1d1d6);
+        border-width: 1px;
+        border-color: root.selected ? #a34d49 : #72727a66;
+        Rectangle {
+            x: 2px;
+            y: 2px;
+            width: parent.width - 4px;
+            height: 1px;
+            background: root.selected ? #ffd1a496 : #c9c9d047;
+        }
+        if root.selected: Rectangle {
+            x: 1px;
+            y: 2px;
+            width: 4px * root.s;
+            height: parent.height - 4px;
+            background: @linear-gradient(180deg, #ffb04820, #ffd380, #ff9a3e20);
+        }
+        Image {
+            x: 20px * root.s;
+            width: 34px * root.s;
+            height: self.width;
+            source: root.glyph;
+            colorize: root.selected ? #f3f1ed : Theme.text;
+        }
+        Text {
+            x: 68px * root.s;
+            width: parent.width - self.x - 12px * root.s;
+            text: root.title;
+            color: root.selected ? #f3f1ed : Theme.text;
+            font-size: 32px * root.s;
+            font-weight: 400;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    body := Rectangle {
+        y: root.title-h + 8px * root.s;
+        height: root.height - self.y;
+        width: root.width;
+        background: root.map-ready ? transparent : Theme.dark ? @linear-gradient(180deg, #24242dba, #17171fba 31%, #53566085 58%, #101119b8 77%, #24252dce) : Theme.panel;
+        border-width: 1px;
+        border-color: #9b9da451;
+        if !root.map-ready: Rectangle {
+            x: 1px;
+            y: parent.height - 2px;
+            width: parent.width - 2px;
+            height: 1px;
+            background: #aeb6c04a;
+        }
+        if root.tile == 0: Rectangle {
+            y: 20px * root.s;
+            x: 28px * root.s;
+            width: parent.width - 56px * root.s;
+            Text {
+                y: 0px;
+                text: root.artist != "" ? root.artist : "No active";
+                width: parent.width;
+                color: Theme.text;
+                font-size: 29px * root.s;
+                overflow: elide;
+            }
+            Text {
+                y: 43px * root.s;
+                text: root.track-title != "" ? root.track-title : "entertainment source.";
+                width: parent.width;
+                color: Theme.text;
+                font-size: 29px * root.s;
+                overflow: elide;
+            }
+        }
+        if root.tile == 0: Rectangle {
+            width: min(parent.width * 0.57, parent.height - 134px * root.s);
+            height: self.width;
+            x: (parent.width - self.width) / 2;
+            y: parent.height - self.height - 22px * root.s;
+            background: @linear-gradient(180deg, #171b24, #06070d 45%, #293542 61%, #06080e 84%);
+            border-width: 2px * root.s;
+            border-color: #777e89;
+            Rectangle {
+                x: 4px * root.s;
+                y: 4px * root.s;
+                width: parent.width - 8px * root.s;
+                height: parent.height - 8px * root.s;
+                border-width: 1px;
+                border-color: #000000;
+            }
+            Image {
+                width: root.has-artwork ? parent.width - 6px * root.s : parent.width * 0.61;
+                height: self.width;
+                source: root.has-artwork ? root.artwork : @image-url("assets/id6-note.svg");
+                image-fit: contain;
+            }
+        }
+        if root.tile == 1: Rectangle {
+            x: 28px * root.s;
+            y: 48px * root.s;
+            width: parent.width - 56px * root.s;
+            height: 110px * root.s;
+            Text {
+                x: 0px;
+                y: 0px;
+                width: 125px * root.s;
+                text: root.calendar-day;
+                color: Theme.text;
+                font-size: 100px * root.s;
+                font-weight: 300;
+            }
+            Text {
+                x: 139px * root.s;
+                y: 12px * root.s;
+                width: parent.width - self.x;
+                text: root.calendar-month;
+                color: Theme.text;
+                font-size: 29px * root.s;
+                overflow: elide;
+            }
+            Text {
+                x: 139px * root.s;
+                y: 52px * root.s;
+                text: root.calendar-year;
+                color: Theme.text;
+                font-size: 29px * root.s;
+            }
+        }
+        if root.tile == 1: Rectangle {
+            y: parent.height - 80px * root.s;
+            height: 80px * root.s;
+            width: parent.width;
+            background: Theme.dark ? #06060975 : #c8c8cd;
+            Rectangle { y: 0px; height: 1px; background: #858a934f; }
+            Image {
+                x: 26px * root.s;
+                width: 28px * root.s;
+                height: self.width;
+                source: @image-url("icons/BluetoothOutlined.svg");
+                colorize: Theme.text;
+            }
+            Text {
+                x: 68px * root.s;
+                width: parent.width - self.x - 18px * root.s;
+                text: root.phone == PhoneState.none ? "No telephone connected" : "Phone connected";
+                color: Theme.text;
+                font-size: 26px * root.s;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+        if (root.tile == 2 && !root.map-ready) || root.tile == 4: Image {
+            x: (parent.width - self.width) / 2;
+            y: 12px * root.s;
+            width: min(parent.width * 0.79, parent.height - 70px * root.s);
+            height: self.width;
+            source: @image-url("assets/id6-globe.png");
+        }
+        if (root.tile == 2 && !root.map-ready) || root.tile == 4: Text {
+            x: 22px * root.s;
+            y: parent.height - 57px * root.s;
+            width: parent.width - 44px * root.s;
+            text: root.tile == 2 ? "Navigation via CarPlay" : "Apple CarPlay / Android Auto";
+            color: Theme.text;
+            font-size: 25px * root.s;
+            overflow: elide;
+        }
+        if root.tile == 3: Image {
+            x: 10px * root.s;
+            y: 42px * root.s;
+            width: parent.width - 20px * root.s;
+            height: parent.height - 145px * root.s;
+            source: @image-url("assets/e90-m3.png");
+            image-fit: contain;
+        }
+        if root.tile == 3: Text {
+            x: 28px * root.s;
+            y: parent.height - 104px * root.s;
+            text: "BMW M3";
+            color: Theme.text;
+            font-size: 33px * root.s;
+        }
+        if root.tile == 3: Text {
+            x: 28px * root.s;
+            y: parent.height - 56px * root.s;
+            text: "Vehicle settings and readings";
+            color: Theme.text-secondary;
+            font-size: 24px * root.s;
+        }
+        if root.tile == 5: Image {
+            x: (parent.width - self.width) / 2;
+            y: 36px * root.s;
+            width: min(parent.width * 0.62, parent.height - 120px * root.s);
+            height: self.width;
+            source: @image-url("assets/id6-gear.png");
+        }
+        if root.tile == 5: Text {
+            x: 28px * root.s;
+            y: parent.height - 60px * root.s;
+            width: parent.width - 56px * root.s;
+            text: "Configure your OpenNBT";
+            color: Theme.text;
+            font-size: 25px * root.s;
+            overflow: elide;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.available && root.interactive;
+        clicked => { root.open(); }
+        changed has-hover => { root.hovered(self.has-hover); }
+    }
+}
+
+export component HomePage inherits Rectangle {
+    in-out property <int> current-page;
+    in property <bool> interactive: true;
+    property <length> page-pitch: root.width * (3 * 0.29375);
+    // Keep both branches floating point. In Slint 1.18, inlining an integer
+    // negation here can make the mixed ternary truncate fractional drag values.
+    property <float> target-slide: root.current-page == 0 ? 0.0 : -1.0;
+    property <float> page-position: root.target-slide;
+    animate page-position { duration: 380ms; easing: spring(0.18); }
+    property <float> swipe-offset;
+    property <float> drag-position: root.drag-origin
+        + (root.horizontal-drag && root.page-pitch > 0px
+            ? (swipe.current-position.x - swipe.pressed-position.x) / root.page-pitch : 0);
+    property <float> resisted-position: root.drag-position > 0 ? root.drag-position * 0.22
+        : root.drag-position < -1 ? -1 + (root.drag-position + 1) * 0.22 : root.drag-position;
+    property <float> slide: root.interactive ? root.page-position + root.swipe-offset : root.target-slide;
+    states [
+        dragging when root.dragging && root.interactive: {
+            // The animated base cancels out while held, including when a finger
+            // catches a still-settling strip. Only the finger controls position.
+            swipe-offset: root.resisted-position - root.page-position;
+            out { animate swipe-offset { duration: 380ms; easing: spring(0.18); } }
+        }
+    ]
+    out property <length> visual-offset: root.slide * root.page-pitch;
+    out property <bool> moving: root.interactive && (swipe.swiping || root.slide != root.target-slide);
+    property <bool> dragging;
+    property <bool> horizontal-drag;
+    property <float> drag-origin;
+    property <int> drag-page;
+    property <length> last-move-x;
+    property <duration> last-move-time;
+    property <float> drag-speed;
+    function select-page(page: int) {
+        swipe.cancel();
+        root.current-page = min(1, max(0, page));
+        root.hovered-tile = -1;
+        if (Focus.zone == FocusZone.main) { Focus.main-index = root.current-page * 3; }
+    }
+    changed current-page => {
+        swipe.cancel();
+        root.current-page = min(1, max(0, root.current-page));
+        root.hovered-tile = -1;
+    }
+    changed interactive => {
+        swipe.cancel();
+        root.hovered-tile = -1;
+    }
+    // Resizing invalidates the gesture's pixel coordinates. Settle in page units
+    // so a new display size cannot expose the map before its tiles are stationary.
+    changed width => { swipe.cancel(); }
+    changed height => { swipe.cancel(); }
+    in property <bool> map-preview-ready;
+    in property <bool> map-preview-enabled: true;
+    property <length> map-x: root.width * (0.075 + 2 * 0.29375) + 1px;
+    property <length> map-y: (14px + 72px + 8px) * root.s + 1px;
+    property <length> map-width: root.width * 0.265 - 2px;
+    property <length> map-height: root.height - (44px + 72px + 8px) * root.s - 2px;
+    out property <MapViewport> map-viewport: {
+        shown: root.interactive && !root.moving && root.map-preview-enabled && root.current-page == 0 && root.width > 0px && root.height > 0px && root.map-width > 0px && root.map-height > 0px,
+        x: root.width > 0px ? root.map-x / root.width : 0,
+        y: root.height > 0px ? root.map-y / root.height : 0,
+        width: root.width > 0px ? root.map-width / root.width : 0,
+        height: root.height > 0px ? root.map-height / root.height : 0,
+    };
+    property <bool> map-hole: root.map-preview-ready && root.map-viewport.shown;
+    in property <PhoneState> phone;
+    in property <string> track-title;
+    in property <string> artist;
+    in property <image> artwork;
+    in property <bool> has-artwork;
+    in property <bool> media-enabled: true;
+    in property <string> calendar-day;
+    in property <string> calendar-month;
+    in property <string> calendar-year;
+    callback open(int);
+    property <int> hovered-tile: -1;
+    property <float> s: Ui.nbt-scale;
+    clip: true;
+    // Video is composited below Slint. Clip the complete backdrop into pieces
+    // around the map, rather than covering it with an opaque parent or SVG.
+    for slice in 4: Rectangle {
+        x: slice == 0 ? 0px : slice == 1 ? root.map-x + root.map-width : root.map-x;
+        y: slice < 3 ? 0px : root.map-y + root.map-height;
+        width: slice == 0 ? (root.map-hole ? root.map-x : root.width)
+            : slice == 1 ? root.width - root.map-x - root.map-width : root.map-width;
+        height: slice < 2 ? root.height : slice == 2 ? root.map-y : root.height - self.y;
+        visible: root.map-hole || slice == 0;
+        clip: true;
+        Rectangle {
+            x: -parent.x;
+            y: -parent.y;
+            width: root.width;
+            height: root.height;
+            background: Theme.backdrop;
+            Image {
+                visible: Theme.dark;
+                width: parent.width;
+                height: parent.height;
+                source: @image-url("assets/id6-backdrop.svg");
+                image-fit: fill;
+            }
+        }
+    }
+    // Keep tile identities stable while the entire strip follows the finger.
+    // The last, inert Media copy retains the clipped next-page preview on page 2.
+    swipe := SwipeGestureHandler {
+        enabled: root.interactive;
+        handle-swipe-left: true;
+        handle-swipe-right: true;
+        handle-swipe-up: true;
+        handle-swipe-down: true;
+        moved => {
+            if (self.swiping && root.page-pitch > 0px) {
+                if (!root.dragging) {
+                    // Capture the displayed position before entering the direct
+                    // tracking state, including any interrupted spring motion.
+                    root.drag-origin = root.slide;
+                    // Undo resistance when catching a spring beyond an edge;
+                    // applying it again would jump inward at the first movement.
+                    if (root.drag-origin > 0) { root.drag-origin /= 0.22; }
+                    else if (root.drag-origin < -1) { root.drag-origin = -1 + (root.drag-origin + 1) / 0.22; }
+                    root.horizontal-drag = abs(self.current-position.x - self.pressed-position.x)
+                        >= abs(self.current-position.y - self.pressed-position.y);
+                    root.dragging = true;
+                    root.drag-page = root.current-page;
+                    root.drag-speed = 0;
+                    root.last-move-x = self.current-position.x;
+                    root.last-move-time = animation-tick();
+                    root.hovered-tile = -1;
+                }
+                if (root.horizontal-drag) {
+                    if (animation-tick() > root.last-move-time) {
+                        root.drag-speed = ((self.current-position.x - root.last-move-x) / 1px)
+                            / ((animation-tick() - root.last-move-time) / 1ms);
+                    }
+                    root.last-move-x = self.current-position.x;
+                    root.last-move-time = animation-tick();
+                }
+            }
+        }
+        swiped => {
+            if (root.horizontal-drag && root.dragging) {
+                root.dragging = false;
+                if (self.current-position.x - self.pressed-position.x > root.width * 0.14
+                    || (root.drag-speed > 0.7 && animation-tick() - root.last-move-time < 100ms)) {
+                    root.select-page(root.drag-page - 1);
+                } else if (self.current-position.x - self.pressed-position.x < -root.width * 0.14
+                    || (root.drag-speed < -0.7 && animation-tick() - root.last-move-time < 100ms)) {
+                    root.select-page(root.drag-page + 1);
+                }
+            }
+            root.dragging = false;
+        }
+        cancelled => {
+            root.dragging = false;
+        }
+        for offset in 7: Id6Tile {
+            property <int> index: mod(offset, 6);
+            x: root.width * (0.075 + offset * 0.29375) + root.visual-offset;
+            y: 14px * root.s;
+            width: root.width * 0.265;
+            height: root.height - 44px * root.s;
+            tile: self.index;
+            map-ready: self.index == 2 && root.map-hole;
+            phone: root.phone;
+            track-title: root.track-title;
+            artist: root.artist;
+            artwork: root.artwork;
+            has-artwork: root.has-artwork;
+            calendar-day: root.calendar-day;
+            calendar-month: root.calendar-month;
+            calendar-year: root.calendar-year;
+            available: offset < 6 && (self.index != 0 || root.media-enabled);
+            interactive: root.interactive && !root.moving && offset >= root.current-page * 3 && offset < (root.current-page + 1) * 3;
+            selected: offset < 6 && offset >= root.current-page * 3 && offset < (root.current-page + 1) * 3 && (root.hovered-tile >= 0 ? root.hovered-tile == self.index : Focus.zone == FocusZone.main ? Focus.main-index == self.index : mod(offset, 3) == 0);
+            open => { root.open(self.index); }
+            hovered(on) => {
+                if (on) { root.hovered-tile = self.index; }
+                else if (root.hovered-tile == self.index) { root.hovered-tile = -1; }
+            }
+        }
+        // Keep the arrow gutter clear of the previous page's trailing tile.
+        // Align the backdrop to the window so this mask has no visible seam.
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: root.width * 0.075;
+            height: root.height;
+            clip: true;
+            Rectangle {
+                x: 0px;
+                y: 0px;
+                width: root.width;
+                height: root.height;
+                background: Theme.backdrop;
+                Image {
+                    visible: Theme.dark;
+                    width: parent.width;
+                    height: parent.height;
+                    source: @image-url("assets/id6-backdrop.svg");
+                    image-fit: fill;
+                }
+            }
+        }
+        if root.current-page > 0: Rectangle {
+            x: 22px * root.s;
+            y: 14px * root.s;
+            width: 74px * root.s;
+            height: root.height - 44px * root.s;
+            Text { text: "‹"; font-size: 76px * root.s; color: Theme.primary; horizontal-alignment: center; vertical-alignment: center; }
+            TouchArea {
+                enabled: root.interactive;
+                clicked => { root.select-page(0); }
+            }
+        }
+        Rectangle {
+            x: root.width * 0.933;
+            y: 14px * root.s;
+            width: root.width * 0.047;
+            height: root.height - 44px * root.s;
+            background: Theme.dark ? @linear-gradient(90deg, #03030700, #030307d9 72%, #03030700) : @linear-gradient(90deg, #eeeeee00, #eeeeeed9 72%, #eeeeee00);
+            Text { text: root.current-page == 0 ? "›" : "‹"; font-size: 76px * root.s; color: Theme.primary; horizontal-alignment: center; vertical-alignment: center; }
+            TouchArea {
+                enabled: root.interactive;
+                clicked => {
+                    root.select-page(root.current-page == 0 ? 1 : 0);
+                }
+            }
+        }
+    }
+}

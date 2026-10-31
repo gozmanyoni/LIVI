@@ -10,6 +10,31 @@ pub fn now_text() -> String {
     format!("{:02}{sep}{:02}", tm.tm_hour, tm.tm_min)
 }
 
+pub fn calendar() -> (String, String, String) {
+    let now = unsafe { libc::time(std::ptr::null_mut()) };
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&now, &mut tm) };
+    let months = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    (
+        tm.tm_mday.to_string(),
+        months.get(tm.tm_mon as usize).unwrap_or(&"").to_string(),
+        (tm.tm_year + 1900).to_string(),
+    )
+}
+
 pub fn stamp() -> String {
     let mut tv: libc::timeval = libc::timeval {
         tv_sec: 0,

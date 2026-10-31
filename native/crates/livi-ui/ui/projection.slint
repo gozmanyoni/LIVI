@@ -46,10 +46,31 @@ export component ProjectionPage inherits Rectangle {
         mask: root.mask;
     }
 
-    if !root.streaming: Image {
-        source: root.idle-icon;
-        width: min(root.width, root.height) * 0.15;
-        height: self.width;
-        colorize: Theme.text-secondary;
+    if !root.streaming: VerticalLayout {
+        alignment: center;
+        spacing: root.height < 300px ? 10px : 22px;
+        Rectangle {
+            height: min(root.width, root.height) * 0.17;
+            Image {
+                x: (parent.width - self.width) / 2;
+                source: root.idle-icon;
+                width: parent.height;
+                height: self.width;
+                colorize: Theme.primary;
+            }
+        }
+        Text {
+            text: "Connect a phone to begin";
+            color: Theme.text;
+            font-size: root.height < 300px ? 20px : 30px;
+            font-weight: 300;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: "Manage mobile devices in Communication";
+            color: Theme.text-secondary;
+            font-size: root.height < 300px ? 13px : 18px;
+            horizontal-alignment: center;
+        }
     }
 }

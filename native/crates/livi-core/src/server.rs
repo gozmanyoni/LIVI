@@ -5,7 +5,7 @@
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use livi_core_proto::PROTOCOL;
@@ -39,6 +39,7 @@ pub struct Core {
     asks: UiSenders,
     uid: u32,
     mfi_dir: PathBuf,
+    next_preview_owner: AtomicU64,
 }
 
 impl Core {
@@ -62,6 +63,7 @@ impl Core {
             asks,
             uid,
             mfi_dir: PathBuf::new(),
+            next_preview_owner: AtomicU64::new(1),
         }
     }
 
@@ -151,6 +153,10 @@ impl Core {
             Action::Restart => {
                 self.restart.store(true, Ordering::SeqCst);
                 self.quit.notify_one();
+                Ok(())
+            }
+            Action::OpenNavigation => {
+                let _ = self.asks.commands.send(UiCommand::OpenNavigation);
                 Ok(())
             }
             Action::Show { screen, front } => {
@@ -322,6 +328,12 @@ async fn client(core: Arc<Core>, stream: UnixStream) -> io::Result<()> {
         return send(&mut wr, &FromCore::Refused { reason }).await;
     }
     println!("[core] {client} connected");
+    let preview_owner = core.next_preview_owner.fetch_add(1, Ordering::Relaxed);
+    let mut preview_lease = PreviewLease {
+        owner: preview_owner,
+        commands: core.asks.commands.clone(),
+        requested: false,
+    };
     let mut pages = core.open_page.subscribe();
     let mut patches = welcome(&core, &mut wr).await?;
     let mut viewer: Option<Viewer> = None;
@@ -358,6 +370,13 @@ async fn client(core: Arc<Core>, stream: UnixStream) -> io::Result<()> {
                         Ok(ToCore::Path { path }) => {
                             core.ui_path.send_replace(path);
                         }
+                        Ok(ToCore::MapPreview { viewport }) => {
+                            preview_lease.requested = true;
+                            let _ = core.asks.commands.send(UiCommand::MapPreview {
+                                owner: preview_owner,
+                                viewport: viewport.filter(|r| r.valid()),
+                            });
+                        }
                         Ok(ToCore::Hello { .. }) => {}
                         Err(FrameError::Json(e)) => println!("[core] {client} sent a broken frame: {e}"),
                         Err(e @ FrameError::TooLarge(_)) => return Err(io::Error::other(e)),
@@ -379,6 +398,20 @@ async fn client(core: Arc<Core>, stream: UnixStream) -> io::Result<()> {
     }
     println!("[core] {client} disconnected");
     Ok(())
+}
+
+struct PreviewLease {
+    owner: u64,
+    commands: tokio::sync::mpsc::UnboundedSender<UiCommand>,
+    requested: bool,
+}
+
+impl Drop for PreviewLease {
+    fn drop(&mut self) {
+        if self.requested {
+            let _ = self.commands.send(UiCommand::MapPreviewGone(self.owner));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -462,6 +495,7 @@ mod tests {
             aux: Front::Livi,
         };
         let hub = Hub::new(State {
+            map_preview: Default::default(),
             front: livi,
             sessions: Default::default(),
             now_playing: Default::default(),
@@ -485,6 +519,59 @@ mod tests {
         let listener = UnixListener::bind(&path).unwrap();
         tokio::spawn(serve(core.clone(), listener));
         (core, path, asks, dongle, update)
+    }
+
+    #[tokio::test]
+    async fn map_preview_lease_clears_only_its_connection_on_disconnect() {
+        let dir = TempDir::new();
+        let (_core, path, mut asks, _, _) = start_with_asks(&dir);
+        let mut peer = Peer::hello(&path).await;
+        let rect = livi_core_proto::state::VideoRect {
+            x: 0.6,
+            y: 0.2,
+            width: 0.3,
+            height: 0.7,
+        };
+        peer.send(&ToCore::MapPreview {
+            viewport: Some(rect),
+        })
+        .await;
+        let command = tokio::time::timeout(Duration::from_secs(5), asks.commands.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let UiCommand::MapPreview { owner, viewport } = command else {
+            panic!("missing viewport command")
+        };
+        assert_eq!(viewport, Some(rect));
+        peer.send(&ToCore::MapPreview {
+            viewport: Some(livi_core_proto::state::VideoRect { width: 2.0, ..rect }),
+        })
+        .await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), asks.commands.recv())
+                .await
+                .unwrap(),
+            Some(UiCommand::MapPreview {
+                owner,
+                viewport: None
+            })
+        );
+        drop(peer);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), asks.commands.recv())
+                .await
+                .unwrap(),
+            Some(UiCommand::MapPreviewGone(owner))
+        );
+    }
+
+    #[tokio::test]
+    async fn navigation_action_opens_maps_through_projection() {
+        let dir = TempDir::new();
+        let (core, _path, mut asks, _, _) = start_with_asks(&dir);
+        core.act(Action::OpenNavigation).await.unwrap();
+        assert_eq!(asks.commands.recv().await, Some(UiCommand::OpenNavigation));
     }
 
     #[tokio::test]

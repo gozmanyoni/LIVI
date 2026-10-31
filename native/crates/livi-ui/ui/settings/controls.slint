@@ -10,28 +10,23 @@ export component Switch inherits Rectangle {
     in property <bool> enabled: true;
     callback toggled();
 
-    width: 58px;
-    height: 38px;
+    width: Metrics.touch-size;
+    height: Metrics.touch-size;
 
     Rectangle {
-        x: 12px;
-        y: 12px;
-        width: 34px;
-        height: 14px;
-        border-radius: 7px;
-        background: root.checked ? Theme.primary.with-alpha(0.5) : (Theme.dark ? #ffffff4d : #00000061);
-    }
-    Rectangle {
-        x: root.checked ? 29px : 9px;
-        y: 9px;
-        width: 20px;
-        height: 20px;
-        border-radius: 10px;
-        background: root.checked ? Theme.primary : (Theme.dark ? #e0e0e0 : #ffffff);
-        drop-shadow-blur: 2px;
-        drop-shadow-offset-y: 1px;
-        drop-shadow-color: #00000066;
-        animate x { duration: 150ms; easing: ease-out; }
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: clamp(Metrics.touch-size * 0.45, 24px, 34px);
+        height: self.width;
+        border-width: 1px;
+        border-color: #a0a0a0;
+        background: @linear-gradient(180deg, #070707, #292929);
+        if root.checked: Text {
+            text: "✓";
+            color: #ffffff;
+            font-size: parent.height;
+            font-weight: 400;
+        }
     }
     TouchArea {
         enabled: root.enabled;
@@ -60,27 +55,25 @@ export component Slider inherits Rectangle {
     property <float> shown: dragging ? drag-level : level;
     property <length> pill: root.small ? Metrics.pill-h-small : Metrics.pill-h;
     property <length> fill: self.width * clamp(root.shown, 0, 1);
-    property <length> gap: root.pill * 0.36;
-    property <bool> inside: root.fill >= label.preferred-width + 2 * root.gap;
     property <bool> lit: root.focused || root.dragging || touch.has-hover;
 
     min-height: root.pill;
     horizontal-stretch: 1;
 
     Rectangle {
-        y: (parent.height - root.pill) / 2;
-        height: root.pill;
-        border-radius: root.pill / 2;
-        background: root.tint.with-alpha(Theme.dark ? 0.26 : 0.18);
-        drop-shadow-blur: root.lit ? 8px : 4px;
-        drop-shadow-color: root.tint.with-alpha(root.lit ? 0.35 : 0.18);
+        y: parent.height - 6px;
+        height: 6px;
+        border-radius: 0px;
+        background: Theme.track;
+        border-width: root.lit ? 1px : 0px;
+        border-color: Theme.text;
     }
     Rectangle {
         x: 0;
-        y: (parent.height - root.pill) / 2;
+        y: parent.height - 6px;
         width: root.fill;
-        height: root.pill;
-        border-radius: root.pill / 2;
+        height: 6px;
+        border-radius: 0px;
         background: root.tint;
     }
     if root.has-icon: Image {
@@ -92,12 +85,12 @@ export component Slider inherits Rectangle {
         colorize: #ffffff;
     }
     label := Text {
-        x: root.inside ? root.fill - self.width - root.gap : root.fill + root.gap;
-        y: (parent.height - self.height) / 2;
+        x: root.has-icon ? root.pill : 0px;
+        y: 0px;
         text: root.text;
         font-size: root.small ? Metrics.pill-font-small : Metrics.pill-font;
-        font-weight: 900;
-        color: root.inside ? #ffffff : Theme.text;
+        font-weight: 400;
+        color: Theme.text;
     }
     touch := TouchArea {
         enabled: root.enabled;

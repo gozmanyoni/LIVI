@@ -350,6 +350,7 @@ mod tests {
 
     fn state(telemetry: Value) -> State {
         State {
+            map_preview: Default::default(),
             front: PerScreen {
                 main: Front::Livi,
                 cluster: Front::Livi,

@@ -35,6 +35,8 @@ pub struct Config {
     pub car_play_vehicle_climate: bool,
     pub car_play_dock_position: DockPosition,
     pub car_play_cluster_content: ClusterContent,
+    #[serde(default = "nav_tile_default")]
+    pub car_play_nav_tile: bool,
     pub car_play_cluster_compass: bool,
     pub car_play_cluster_eta: bool,
     pub car_play_cluster_speed_limit: bool,
@@ -388,6 +390,10 @@ pub struct KeyBindings {
     pub voice_assistant_release: String,
 }
 
+fn nav_tile_default() -> bool {
+    true
+}
+
 pub fn defaults() -> Config {
     let off = PerScreen {
         main: false,
@@ -426,6 +432,7 @@ pub fn defaults() -> Config {
         car_play_vehicle_climate: true,
         car_play_dock_position: DockPosition::Bottom,
         car_play_cluster_content: ClusterContent::Map,
+        car_play_nav_tile: true,
         car_play_cluster_compass: true,
         car_play_cluster_eta: true,
         car_play_cluster_speed_limit: true,
@@ -468,7 +475,7 @@ pub fn defaults() -> Config {
         display_brightness: 1.0,
         display_brightness_auto: true,
         car_name: "LIVI".into(),
-        oem_name: "LIVI".into(),
+        oem_name: "OpenNBT".into(),
         hand: HandDriveType::Lhd,
         car_type: Some(CarType::Gasoline),
         ev_connector_types: Some(Vec::new()),
@@ -592,6 +599,23 @@ fn default_bindings() -> KeyBindings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_configs_gain_the_tile_without_losing_an_explicit_opt_out() {
+        let mut wire = serde_json::to_value(defaults()).unwrap();
+        wire.as_object_mut().unwrap().remove("carPlayNavTile");
+        assert!(
+            serde_json::from_value::<Config>(wire.clone())
+                .unwrap()
+                .car_play_nav_tile
+        );
+        wire["carPlayNavTile"] = serde_json::Value::Bool(false);
+        assert!(
+            !serde_json::from_value::<Config>(wire)
+                .unwrap()
+                .car_play_nav_tile
+        );
+    }
 
     #[test]
     fn names_from_telemetry_match_in_any_case() {

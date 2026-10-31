@@ -62,12 +62,13 @@ impl Projection {
             self.on_config(&cfg);
             let language = cfg.language != self.config_seen.language;
             let theme = cfg.car_play_theme != self.config_seen.car_play_theme;
+            let map_preview = cfg.car_play_nav_tile != self.config_seen.car_play_nav_tile;
             if theme {
                 self.follow_theme(&cfg);
             }
             let arranged = self.cluster.arrange(&cfg.dashboard_layouts);
             self.config_seen = cfg;
-            if language || theme || arranged {
+            if language || theme || arranged || map_preview {
                 self.publish();
             }
             self.apply_when_idle();

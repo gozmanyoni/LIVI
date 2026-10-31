@@ -11,6 +11,7 @@ use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
 use smithay::backend::renderer::element::texture::TextureRenderElement;
+use smithay::backend::renderer::element::utils::CropRenderElement;
 use smithay::backend::renderer::gles::element::TextureShaderElement;
 use smithay::backend::renderer::gles::{
     GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName, UniformType,
@@ -21,9 +22,19 @@ use smithay::utils::{Logical, Point, Rectangle, Transform};
 
 use crate::state::{BTN_GAP, BTN_W, Kind, LiviState, TITLEBAR_H};
 
+fn playback_allowed_on(role: &str, configs: &[crate::state::VideoCfg]) -> bool {
+    // Placement reaches the compositor independently of the state follower's
+    // videoshow command. Fail closed across that handoff: a Home map cutout
+    // must never reveal the higher-ranked full-screen playback plane.
+    !configs.iter().any(|cfg| {
+        cfg.tag == "cluster-main" && cfg.destination.is_some() && cfg.destination_screen == role
+    })
+}
+
 smithay::backend::renderer::element::render_elements! {
     pub LiviElement<=GlesRenderer>;
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
+    CroppedSurface=CropRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
     Deco=MemoryRenderBufferRenderElement<GlesRenderer>,
     Calibrated=TextureShaderElement,
 }
@@ -148,6 +159,7 @@ fn collect_elements(state: &mut LiviState, screen_idx: usize) -> (Vec<LiviElemen
     let (sx, sw, sh) = (s.x, s.width, s.height);
     let fullscreen = s.fullscreen;
     let role = s.role.clone();
+    let playback_allowed = playback_allowed_on(&role, &state.video_cfgs);
     let renderer = state.renderer.as_mut().unwrap();
     let mut elements: Vec<LiviElement> = Vec::new();
     let mut has_ui = false;
@@ -238,10 +250,14 @@ fn collect_elements(state: &mut LiviState, screen_idx: usize) -> (Vec<LiviElemen
         let Some(t) = state.toplevels.get(vi) else {
             continue;
         };
-        if t.kind != Kind::Video || t.screen_idx != screen_idx || !t.visible {
+        if t.kind != Kind::Video
+            || t.screen_idx != screen_idx
+            || !t.visible
+            || (t.tag == "video" && !playback_allowed)
+        {
             continue;
         }
-        elements.extend(
+        let video_elements =
             render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<GlesRenderer>>(
                 renderer,
                 t.toplevel.wl_surface(),
@@ -249,10 +265,20 @@ fn collect_elements(state: &mut LiviState, screen_idx: usize) -> (Vec<LiviElemen
                 scale,
                 1.0,
                 ElementKind::Unspecified,
+            );
+        if let Some(destination) = t.destination {
+            let clip = crate::layout::video_destination(
+                Rectangle::new((0, s.top_inset()).into(), (sw, sh - s.top_inset()).into()),
+                Some(destination),
             )
-            .into_iter()
-            .map(LiviElement::Surface),
-        );
+            .to_physical_precise_round(scale);
+            elements.extend(video_elements.into_iter().filter_map(|element| {
+                CropRenderElement::from_element(element, scale, clip)
+                    .map(LiviElement::CroppedSurface)
+            }));
+        } else {
+            elements.extend(video_elements.into_iter().map(LiviElement::Surface));
+        }
     }
 
     let _ = (sh, TITLEBAR_H);
@@ -488,4 +514,65 @@ where
         uniforms,
     )?;
     Ok(frame.finish()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smithay::backend::renderer::element::Element;
+    use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
+
+    #[test]
+    fn navigation_placement_reserves_its_output_against_late_playback_visibility() {
+        use crate::state::{VideoBox, VideoCfg};
+
+        let mut configs = vec![VideoCfg {
+            tag: "cluster-main".into(),
+            ..Default::default()
+        }];
+        assert!(playback_allowed_on("main", &configs));
+        configs[0].set_destination("main", VideoBox::new(0.6, 0.2, 0.3, 0.5));
+        assert!(
+            !playback_allowed_on("main", &configs),
+            "reserve even before the map's first frame"
+        );
+        assert!(
+            playback_allowed_on("cluster", &configs),
+            "other outputs are independent"
+        );
+        configs.push(VideoCfg {
+            tag: "video".into(),
+            has_visible: true,
+            visible: true,
+            ..Default::default()
+        });
+        assert!(
+            !playback_allowed_on("main", &configs),
+            "a delayed visible command cannot cover the map"
+        );
+        configs[0].set_destination("main", None);
+        assert!(
+            playback_allowed_on("main", &configs),
+            "full-screen CarPlay regains playback"
+        );
+    }
+
+    #[test]
+    fn destination_clipping_contains_expanded_source_crop_and_rejects_other_tiles() {
+        let make = |position| {
+            SolidColorRenderElement::from_buffer(
+                &SolidColorBuffer::new((640, 480), Color32F::new(0.0, 0.0, 0.0, 1.0)),
+                position,
+                1.0,
+                1.0,
+                ElementKind::Unspecified,
+            )
+        };
+        let destination = Rectangle::new((800, 100).into(), (400, 300).into());
+        let cropped = CropRenderElement::from_element(make((700, 50)), 1.0, destination).unwrap();
+        assert_eq!(cropped.geometry(1.0.into()), destination);
+        assert_eq!(cropped.src().loc, (100.0, 50.0).into());
+        assert_eq!(cropped.src().size, (400.0, 300.0).into());
+        assert!(CropRenderElement::from_element(make((0, 0)), 1.0, destination).is_none());
+    }
 }

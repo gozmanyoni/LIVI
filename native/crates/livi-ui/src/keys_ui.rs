@@ -24,6 +24,7 @@ const LEVEL_STEP: f32 = 0.01;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Target {
+    HomeTile(i32),
     Back,
     Apply,
     Row(usize, RowKind),
@@ -107,6 +108,7 @@ fn settings_targets(s: &SettingsState) -> Vec<Target> {
 
 fn targets(ui: &AppWindow) -> Vec<Target> {
     match ui.get_page() {
+        Page::Home => (0..6).map(Target::HomeTile).collect(),
         Page::Settings => settings_targets(&ui.global::<SettingsState>()),
         Page::Media => {
             let mut out = Vec::new();
@@ -178,8 +180,60 @@ fn enter_main(ui: &AppWindow) {
         return;
     }
     f.set_editing(false);
-    f.set_main_index(first_index(&list));
+    let index = if ui.get_page() == Page::Home {
+        ui.get_home_page().clamp(0, 1) * 3
+    } else {
+        first_index(&list)
+    };
+    set_main_index(ui, index);
     f.set_zone(FocusZone::Main);
+}
+
+fn set_main_index(ui: &AppWindow, index: i32) {
+    ui.global::<Focus>().set_main_index(index);
+    if ui.get_page() == Page::Home {
+        ui.set_home_page(index / 3);
+    }
+}
+
+fn home_requested(
+    code: &str,
+    ctx: Context,
+    on_home: bool,
+    outcome: &Outcome,
+    config: &serde_json::Value,
+) -> bool {
+    if ctx.editing || (ctx.projection && ctx.streaming) {
+        return false;
+    }
+    let mapped = bound_to(config, code);
+    (code == "Home" && mapped.is_none() && matches!(outcome, Outcome::Ignore))
+        || (!on_home
+            && !ctx.projection
+            && ctx.settings_depth == 0
+            && (matches!(outcome, Outcome::ToNav)
+                || (ctx.zone == Zone::Nav
+                    && (code == "Escape" || mapped.as_deref() == Some("back"))
+                    && mapped.as_deref().is_none_or(|name| name == "back")
+                    && matches!(outcome, Outcome::Ignore))))
+}
+
+fn open_home(ui: &AppWindow) {
+    ui.set_page(Page::Home);
+    ui.invoke_page_chosen(Page::Home);
+    TRAIL.with_borrow_mut(Vec::clear);
+    enter_main(ui);
+}
+
+pub fn home_destination_opened(ui: &AppWindow) {
+    TRAIL.with_borrow_mut(Vec::clear);
+    let f = ui.global::<Focus>();
+    f.set_editing(false);
+    if f.get_zone() == FocusZone::Main {
+        enter_main(ui);
+    } else {
+        f.set_zone(FocusZone::None);
+    }
 }
 
 fn to_nav(ui: &AppWindow) {
@@ -213,6 +267,7 @@ fn activate(ui: &AppWindow, target: Target) {
     let d = ui.global::<DabState>();
     let from = ui.global::<Focus>().get_main_index();
     match target {
+        Target::HomeTile(i) => ui.invoke_home_open(i),
         Target::Back => {
             s.invoke_back();
             settle_after_settings_move(ui, false, from);
@@ -378,7 +433,7 @@ fn apply(ui: &AppWindow, client: &Client, code: &str, outcome: Outcome) -> Event
         Outcome::MainStep(d) => {
             if !list.is_empty() {
                 f.set_editing(false);
-                f.set_main_index((f.get_main_index() + d).clamp(0, list.len() as i32 - 1));
+                set_main_index(ui, (f.get_main_index() + d).clamp(0, list.len() as i32 - 1));
             }
         }
         Outcome::Activate => {
@@ -470,6 +525,10 @@ pub fn wire(ui: &AppWindow, client: &Client) {
                 KEY_REPEAT.set(event.repeat);
                 let ctx = context(&ui, event.repeat);
                 let outcome = decide(&code, ctx, &config);
+                if home_requested(&code, ctx, ui.get_page() == Page::Home, &outcome, &config) {
+                    open_home(&ui);
+                    return EventResult::PreventDefault;
+                }
                 apply(&ui, &client, &code, outcome)
             }
             winit::event::WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -523,4 +582,105 @@ pub fn wire(ui: &AppWindow, client: &Client) {
 
 pub fn text_done(ui: &AppWindow) {
     ui.global::<Focus>().set_editing(false);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn native_context() -> Context {
+        Context {
+            zone: Zone::Main,
+            focused: Focused::Plain,
+            editing: false,
+            projection: false,
+            streaming: false,
+            telemetry: false,
+            settings_depth: 0,
+            repeat: false,
+        }
+    }
+
+    fn opens_home(code: &str, ctx: Context, bindings: serde_json::Value) -> bool {
+        let config = json!({ "bindings": bindings });
+        let outcome = decide(code, ctx, &config);
+        home_requested(code, ctx, false, &outcome, &config)
+    }
+
+    #[test]
+    fn native_home_and_top_level_back_open_the_launcher() {
+        let ctx = native_context();
+        assert!(opens_home("Home", ctx, json!({})));
+        assert!(opens_home("Escape", ctx, json!({})));
+        assert!(opens_home("Backspace", ctx, json!({ "back": "Backspace" })));
+        let nav = Context {
+            zone: Zone::Nav,
+            ..ctx
+        };
+        assert!(opens_home("Escape", nav, json!({})));
+        assert!(opens_home("Backspace", nav, json!({ "back": "Backspace" })));
+    }
+
+    #[test]
+    fn launcher_keeps_nested_settings_and_editing_back() {
+        let ctx = native_context();
+        let nested = Context {
+            settings_depth: 1,
+            ..ctx
+        };
+        assert!(!opens_home("Escape", nested, json!({})));
+        let editing = Context {
+            focused: Focused::Text,
+            editing: true,
+            ..ctx
+        };
+        assert!(!opens_home("Escape", editing, json!({})));
+        assert!(!opens_home("Home", editing, json!({})));
+        assert!(!home_requested(
+            "Escape",
+            ctx,
+            true,
+            &Outcome::ToNav,
+            &json!({}),
+        ));
+    }
+
+    #[test]
+    fn launcher_keeps_configured_core_keys_and_streaming_projection_input() {
+        let ctx = native_context();
+        assert!(!opens_home("Home", ctx, json!({ "playPause": "Home" })));
+        assert!(!opens_home("Home", ctx, json!({ "home": "Home" })));
+        assert!(!opens_home("Escape", ctx, json!({ "playPause": "Escape" })));
+        let repeating = Context {
+            repeat: true,
+            ..ctx
+        };
+        assert!(!opens_home(
+            "Home",
+            repeating,
+            json!({ "voiceAssistant": "Home" })
+        ));
+        let nav = Context {
+            zone: Zone::Nav,
+            ..repeating
+        };
+        assert!(!opens_home(
+            "Escape",
+            nav,
+            json!({ "voiceAssistant": "Escape" })
+        ));
+        let projection = Context {
+            projection: true,
+            streaming: true,
+            ..ctx
+        };
+        assert!(!opens_home("Home", projection, json!({})));
+        assert!(!opens_home("Escape", projection, json!({})));
+        let nav = Context {
+            zone: Zone::Nav,
+            ..projection
+        };
+        assert!(!opens_home("Home", nav, json!({})));
+    }
 }

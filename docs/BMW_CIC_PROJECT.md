@@ -1,9 +1,14 @@
-# BMW CIC interface project
+# OpenNBT — BMW E90 / CIC interface project
 
 Build a modern BMW E9x interface on native LIVI, with wireless CarPlay on a
 Raspberry Pi 5. **Retain the original CIC without its screen.** CIC remains the
 OEM MOST network master and provides existing audio and vehicle services. This
 project replaces the visible interface; it does not replace the MOST master.
+
+The fork's product name is **OpenNBT**. The source interface now follows NBT Evo
+ID6's two-page tile layout and list styling, with an E90 M3 identity and existing
+native feature destinations. See [the UI design and menu mapping](OPENNBT_DESIGN.md).
+This visual shell does not establish live BMW telemetry or OEM control support.
 
 Repository: [gozmanyoni/LIVI](https://github.com/gozmanyoni/LIVI).
 Development baseline: `main` in `/Users/yonigozman/Development/PiMost/LIVI`.

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Additional terms: see NOTICE
 
-import { Theme, Ui } from "../theme.slint";
+import { Theme } from "../theme.slint";
 import { Metrics } from "metrics.slint";
 
 export component RowButton inherits Rectangle {
@@ -14,26 +14,26 @@ export component RowButton inherits Rectangle {
 
     property <bool> lit: touch.has-hover || touch.pressed || root.focused;
 
-    width: max(120px, label.preferred-width + 32px);
-    height: 36px;
-    border-radius: 4px;
+    width: max(140px, label.preferred-width + 48px);
+    height: max(44px, Metrics.touch-size - 8px);
+    border-radius: 0px;
     opacity: root.enabled ? 1 : 0.45;
-    background: root.outlined ? (root.lit ? Theme.primary.with-alpha(0.08) : transparent) : Theme.primary;
-    border-width: root.outlined ? 1px : 0;
-    border-color: Theme.primary.with-alpha(0.5);
-    drop-shadow-blur: !root.outlined && root.lit ? 16px : 0;
+    background: root.lit ? Theme.selection : Theme.panel;
+    border-width: 1px;
+    border-color: root.lit ? Theme.selection-edge : #555555;
+    drop-shadow-blur: 0;
     drop-shadow-color: Theme.highlight.with-alpha(0.55);
     Rectangle {
-        border-radius: 4px;
-        border-width: root.lit ? 2px : 0;
+        border-radius: 0px;
+        border-width: 0;
         border-color: Theme.highlight.with-alpha(root.focused ? 0.85 : 0.65);
     }
     label := Text {
         text: root.text;
-        font-size: 14px;
-        font-weight: 500;
+        font-size: max(16px, Metrics.row-font * 0.85);
+        font-weight: 400;
         letter-spacing: 0.4px;
-        color: root.outlined ? Theme.primary : #000000de;
+        color: root.lit ? #ffffff : Theme.text;
     }
     touch := TouchArea {
         enabled: root.enabled;
@@ -48,21 +48,19 @@ export component ToolButton inherits Rectangle {
     in property <bool> focused;
     callback clicked();
 
-    property <length> glyph: Metrics.icon-px + 4px;
-
-    property <length> pad: Ui.width < 600px ? 4px : 12px;
-    width: glyph + pad;
-    height: glyph + pad;
-    border-radius: self.width / 2;
+    property <length> glyph: max(Metrics.icon-px, Metrics.touch-size * 0.42);
+    width: Metrics.touch-size;
+    height: Metrics.touch-size;
+    border-radius: 0px;
     opacity: root.enabled ? 1 : 0.38;
-    background: root.focused || (touch.has-hover && root.enabled) ? Theme.text.with-alpha(0.08) : transparent;
+    background: root.focused || (touch.has-hover && root.enabled) ? Theme.selection : transparent;
     border-width: root.focused ? 2px : 0;
     border-color: Theme.primary;
     Image {
         width: root.glyph;
         height: root.glyph;
         source: root.icon;
-        colorize: root.tint;
+        colorize: root.focused || (touch.has-hover && root.enabled) ? #ffffff : root.tint;
     }
     touch := TouchArea {
         enabled: root.enabled;

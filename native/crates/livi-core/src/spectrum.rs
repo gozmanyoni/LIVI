@@ -175,6 +175,7 @@ mod tests {
         let mut config = defaults();
         config.visual_audio_delay_ms = delay_ms;
         State {
+            map_preview: Default::default(),
             front: PerScreen {
                 main: Front::Livi,
                 cluster: Front::Livi,
