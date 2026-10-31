@@ -5,7 +5,8 @@ Raspberry Pi 5. **Retain the original CIC without its screen.** CIC remains the
 OEM MOST network master and provides existing audio and vehicle services. This
 project replaces the visible interface; it does not replace the MOST master.
 
-Repository: GitHub fork setup pending (intended: https://github.com/gozmanyoni/LIVI). Development baseline: `main` in `/Users/yonigozman/Development/PiMost/LIVI`.
+Repository: [gozmanyoni/LIVI](https://github.com/gozmanyoni/LIVI).
+Development baseline: `main` in `/Users/yonigozman/Development/PiMost/LIVI`.
 Read [SESSION_HANDOFF.md](SESSION_HANDOFF.md) before starting implementation.
 
 ## Architecture

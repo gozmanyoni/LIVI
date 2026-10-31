@@ -3,7 +3,9 @@
 ## Start here
 
 Main checkout: `/Users/yonigozman/Development/PiMost/LIVI`, branch `main`.
-Fork: GitHub fork setup pending (intended: https://github.com/gozmanyoni/LIVI). Upstream native baseline is LIVI 10.2.0 commit
+Fork: [gozmanyoni/LIVI](https://github.com/gozmanyoni/LIVI), created 2026-10-31.
+`origin` targets the fork; `upstream` targets `f-io/LIVI`.
+Upstream native baseline is LIVI 10.2.0 commit
 `e7b20b818f052958afc95dcf91acc25c70643c02` from `f-io/LIVI`.
 Read [BMW_CIC_PROJECT.md](BMW_CIC_PROJECT.md) for architecture and independent lanes.
 The user is opening additional sessions on this repository; coordinate ownership
@@ -135,7 +137,9 @@ a second local copy until separately retired.
   Its pinned Rust toolchain and Linux multimedia build environment were required;
   consult scripts/records before replacing them with host-only commands.
 - Earlier Electron PiMOST integration and user edits are preserved at
-  `local branch `codex/legacy-electron-pimost-20261030`, commit `281d33f5dcc1c45319b29a8c3de951ca792dd650``. This is historical reference, not the native build target.
+  local branch `codex/legacy-electron-pimost-20261030`, commit
+  `281d33f5dcc1c45319b29a8c3de951ca792dd650`. This is historical reference, not
+  the native build target.
 - Current native MOST implementation:
   `/Users/yonigozman/Development/carpodgo/tools/pimost-native-mostd/mostd.cpp` and
   `protocol_test.cpp`. Existing packaging targets older ARM; port packaging for
